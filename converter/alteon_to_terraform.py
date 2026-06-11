@@ -36,7 +36,7 @@
 # https://github.com/team-netz/alteon-to-terraform
 #
 # Version:
-# 0.3.0
+# 0.3.2
 #
 # Release Date:
 # 2026-06-11
@@ -76,6 +76,13 @@
 #
 # Changelog:
 #
+# 0.3.3
+# - Add schema for real Server
+#
+# 0.3.2
+# - Added Terraform import file generation with -i/--import-file
+# - Added extended alteon_virtual_server field mapping
+#
 # 0.3.0
 # - Added alteon_server_group support
 # - Added alteon_virtual_service support
@@ -93,8 +100,8 @@
 # =============================================================================
 
 '''
-alteon_to_terraform_native_v3.py
-Version: native-v3
+alteon_to_terraform_native_v3_3.py
+Version: native-v3.3
 
 Konvertiert ausgewählte Alteon-CLI-Dump-Blöcke in Terraform
 für den Radware/alteon Provider.
@@ -131,9 +138,10 @@ from typing import Any, Iterable
 
 __author__ = "Michael Schwenke"
 __company__ = "Team-Netz GmbH"
-__version__ = "0.3.0"
+__version__ = "0.3.3"
 __license__ = "Apache-2.0"
 __status__ = "Development"
+
 
 @dataclass
 class Block:
@@ -311,7 +319,7 @@ def block_to_real_server(block: Block) -> tuple[str, list[str]] | None:
     index = m.group(1)
     parsed = parse_commands(block.commands)
 
-    ipaddr = one_value(parsed, "rip")
+    ipaddr = one_value(parsed, "rip") or one_value(parsed, "ipaddr")
     if not ipaddr:
         return None
 
@@ -326,6 +334,100 @@ def block_to_real_server(block: Block) -> tuple[str, list[str]] | None:
     elif "dis" in parsed:
         attrs["state"] = 2
 
+    # Direkt abbildbare String-Felder aus dem Provider-Schema.
+    direct_string_keys = {
+        "ipv6addr": "ipv6addr",
+        "copy": "copy",
+        "portsingress": "portsingress",
+        "portsegress": "portsegress",
+        "urlbmap": "urlbmap",
+        "proxyipaddress": "proxyipaddress",
+        "proxyipaddr": "proxyipaddress",
+        "proxyipmask": "proxyipmask",
+        "proxyipv6address": "proxyipv6address",
+        "proxyipv6addr": "proxyipv6address",
+        "proxyipnwclass": "proxyipnwclass",
+        "oid": "oid",
+        "commstring": "commstring",
+        "backup": "backup",
+        "healthid": "healthid",
+        "hcid": "healthid",
+    }
+
+    # Integer-Felder aus dem Provider-Schema. Werte können je nach Alteon-CLI
+    # numerisch oder als ena/dis geschrieben sein; beides wird behandelt.
+    direct_int_keys = {
+        "weight": "weight",
+        "maxconns": "maxconns",
+        "maxconn": "maxconns",
+        "timeout": "timeout",
+        "pinginterval": "pinginterval",
+        "pingint": "pinginterval",
+        "failretry": "failretry",
+        "succretry": "succretry",
+        "deletestatus": "deletestatus",
+        "type": "type",
+        "addurl": "addurl",
+        "remurl": "remurl",
+        "cookie": "cookie",
+        "excludestr": "excludestr",
+        "submac": "submac",
+        "idsport": "idsport",
+        "nxtrportidx": "nxtrportidx",
+        "nxtbuddyidx": "nxtbuddyidx",
+        "llbtype": "llbtype",
+        "addportsingress": "addportsingress",
+        "remportsingress": "remportsingress",
+        "addportsegress": "addportsegress",
+        "remportsegress": "remportsegress",
+        "vlaningress": "vlaningress",
+        "vlanegress": "vlanegress",
+        "egressif": "egressif",
+        "sectype": "sectype",
+        "ingressif": "ingressif",
+        "secdeviceflag": "secdeviceflag",
+        "ingport": "ingport",
+        "proxy": "proxy",
+        "ldapwr": "ldapwr",
+        "idsvlan": "idsvlan",
+        "avail": "avail",
+        "fasthealthcheck": "fasthealthcheck",
+        "subdmac": "subdmac",
+        "overflow": "overflow",
+        "bkppreempt": "bkppreempt",
+        "mode": "mode",
+        "updateallrealservers": "updateallrealservers",
+        "proxyipmode": "proxyipmode",
+        "proxyipv6prefix": "proxyipv6prefix",
+        "proxyippersistency": "proxyippersistency",
+        "proxyipnwclasspersistency": "proxyipnwclasspersistency",
+        "ingvlan": "ingvlan",
+        "criticalconnthrsh": "criticalconnthrsh",
+        "highconnthrsh": "highconnthrsh",
+        "uploadbandwidth": "uploadbandwidth",
+        "downloadbandwidth": "downloadbandwidth",
+    }
+
+    for cli_key, tf_key in direct_string_keys.items():
+        value = clean_quote(one_value(parsed, cli_key))
+        if value:
+            attrs[tf_key] = value
+
+    for cli_key, tf_key in direct_int_keys.items():
+        value = one_value(parsed, cli_key)
+        if not value:
+            continue
+        value = clean_quote(value) or value
+        if re.fullmatch(r"-?\d+", value):
+            attrs[tf_key] = int(value)
+        else:
+            try:
+                attrs[tf_key] = enum_enable(value)
+            except ValueError:
+                # Unbekannte Text-Enums werden bewusst ausgelassen, damit die
+                # erzeugte HCL nicht mit falschem Typ invalid wird.
+                pass
+
     name = f"real_server_{index}"
     lines = [
         f'resource "alteon_real_server" "{safe_name(name)}" {{',
@@ -334,7 +436,6 @@ def block_to_real_server(block: Block) -> tuple[str, list[str]] | None:
         "}",
     ]
     return name, lines
-
 
 
 def block_to_server_group(block: Block) -> tuple[str, list[str]] | None:
@@ -461,6 +562,50 @@ def block_to_virtual_server(block: Block) -> tuple[str, list[str]] | None:
         attrs["virtserverstate"] = 1
     elif "dis" in parsed:
         attrs["virtserverstate"] = 2
+
+    # Mapping gemäß alteon_virtual_server Schema.
+    # Nur direkt erkennbare Alteon-CLI-Keys werden gesetzt.
+    direct_string_keys = {
+        "dname": "virtserverdname",
+        "domain": "virtserverdname",
+        "ipv6": "virtserveripv6addr",
+        "ipv6addr": "virtserveripv6addr",
+        "srcnetwork": "virtserversrcnetwork",
+        "nat": "virtservernat",
+        "nat6": "virtservernat6",
+        "wanlink": "virtserverwanlink",
+        "rule": "virtserverrule",
+    }
+    direct_int_keys = {
+        "l3only": "virtserverlayer3only",
+        "layer3only": "virtserverlayer3only",
+        "bwmcontract": "virtserverbwmcontract",
+        "weight": "virtserverweight",
+        "avail": "virtserveravail",
+        "addrule": "virtserveraddrule",
+        "removerule": "virtserverremoverule",
+        "freeserviceidx": "virtserverfreeserviceidx",
+        "creset": "virtservercreset",
+        "isdnssecvip": "virtserverisdnssecvip",
+        "availpersist": "virtserveravailpersist",
+        "rtsrcmac": "virtserverrtsrcmac",
+        "creationtype": "virtservercreationtype",
+    }
+
+    for cli_key, tf_key in direct_string_keys.items():
+        value = clean_quote(one_value(parsed, cli_key))
+        if value:
+            attrs[tf_key] = value
+
+    for cli_key, tf_key in direct_int_keys.items():
+        value = one_value(parsed, cli_key)
+        if value and re.fullmatch(r"-?\d+", value):
+            attrs[tf_key] = int(value)
+        elif value:
+            try:
+                attrs[tf_key] = enum_enable(value)
+            except ValueError:
+                pass
 
     name = f"virtual_server_{index}"
     lines = [
@@ -644,6 +789,86 @@ def blocks_to_terraform(blocks: Iterable[Block], native: bool = True) -> str:
 
     return "\n".join(out).rstrip() + "\n"
 
+def collect_imports(blocks: Iterable[Block], native: bool = True) -> list[dict[str, str]]:
+    """
+    Erzeugt Terraform import-Blöcke für Native-Resources.
+
+    Aktuell werden bewusst nur die vom Benutzer gewünschten Basisobjekte
+    importiert:
+      - alteon_real_server
+      - alteon_server_group
+      - alteon_virtual_server
+
+    Nicht importiert werden:
+      - alteon_virtual_service, weil der Provider-Import-Key je nach Version
+        unterschiedlich sein kann.
+      - zusätzliche group addserver-Resources, da diese denselben Alteon-Index
+        verwenden und nur Änderungsoperationen für Mitgliedschaften darstellen.
+      - alteon_cli_command-Fallbacks.
+    """
+    if not native:
+        return []
+
+    imports: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    for block in blocks:
+        resource_type: str | None = None
+        resource_name: str | None = None
+        import_id: str | None = None
+
+        if is_real_path(block.path):
+            m = re.fullmatch(r"/c/slb/real\s+(\S+)", block.path)
+            parsed = parse_commands(block.commands)
+            # Nur importieren, wenn auch eine Native-Resource erzeugt wird.
+            if m and one_value(parsed, "rip"):
+                import_id = m.group(1)
+                resource_type = "alteon_real_server"
+                resource_name = safe_name(f"real_server_{import_id}")
+
+        elif is_group_path(block.path):
+            m = re.fullmatch(r"/c/slb/group\s+(\S+)", block.path)
+            if m:
+                import_id = m.group(1)
+                resource_type = "alteon_server_group"
+                resource_name = safe_name(f"server_group_{import_id}")
+
+        elif is_virt_path(block.path):
+            m = re.fullmatch(r"/c/slb/virt\s+(\S+)", block.path)
+            parsed = parse_commands(block.commands)
+            # Nur importieren, wenn auch eine Native-Resource erzeugt wird.
+            if m and one_value(parsed, "vip"):
+                import_id = m.group(1)
+                resource_type = "alteon_virtual_server"
+                resource_name = safe_name(f"virtual_server_{import_id}")
+
+        if resource_type and resource_name and import_id:
+            key = (resource_type, resource_name)
+            if key not in seen:
+                imports.append({
+                    "resource": f"{resource_type}.{resource_name}",
+                    "id": import_id,
+                })
+                seen.add(key)
+
+    return imports
+
+
+def imports_to_terraform(imports: Iterable[dict[str, str]]) -> str:
+    lines: list[str] = []
+    for item in imports:
+        lines.extend([
+            "import {",
+            f"  to = {item['resource']}",
+            f"  id = {hcl_value(item['id'])}",
+            "}",
+            "",
+        ])
+    return "\n".join(lines).rstrip() + ("\n" if lines else "")
+
+
+def write_import_file(imports: Iterable[dict[str, str]], filename: str | Path) -> None:
+    Path(filename).write_text(imports_to_terraform(imports), encoding="utf-8")
 
 def main() -> int:
     parser = argparse.ArgumentParser(
@@ -658,6 +883,7 @@ def main() -> int:
 
     parser.add_argument("input", type=Path, help="Alteon-Konfigurationsdump")
     parser.add_argument("-o", "--output", type=Path, default=Path("main.tf"), help="Zieldatei, Default: main.tf")
+    parser.add_argument("-i", "--import-file", help="Generate Terraform import blocks")
     parser.add_argument(
         "--cli-only",
         action="store_true",
@@ -667,8 +893,13 @@ def main() -> int:
 
     text = args.input.read_text(encoding="utf-8", errors="replace")
     blocks = parse_alteon_config(text)
-    hcl = blocks_to_terraform(blocks, native=not args.cli_only)
+    native = not args.cli_only
+    hcl = blocks_to_terraform(blocks, native=native)
     args.output.write_text(hcl, encoding="utf-8")
+
+    generated_imports = collect_imports(blocks, native=native)
+    if args.import_file:
+        write_import_file(generated_imports, args.import_file)
 
     relevant = [
         b for b in blocks
@@ -679,8 +910,10 @@ def main() -> int:
         or is_cli_supported_path(b.path)
     ]
 
-    print("alteon_to_terraform_native_v3")
+    print("alteon_to_terraform_native_v3_3")
     print(f"OK: {len(relevant)} relevante Alteon-Blöcke nach {args.output} geschrieben.")
+    if args.import_file:
+        print(f"OK: {len(generated_imports)} Import-Blöcke nach {args.import_file} geschrieben.")
     print("Modus:", "Native Resources" if not args.cli_only else "CLI only")
     return 0
 
