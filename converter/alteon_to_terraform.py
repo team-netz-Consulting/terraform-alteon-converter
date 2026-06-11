@@ -1,7 +1,100 @@
 #!/usr/bin/env python3
+#
+# =============================================================================
+# Alteon Configuration to Terraform Converter
+# =============================================================================
+#
+# Project:
+# Alteon Configuration Converter
+#
+# Description:
+# Converts Radware Alteon configuration dumps into Terraform resources
+# using the official Radware Alteon Terraform Provider.
+#
+# Supported Objects:
+# - /c/slb/real
+# - /c/slb/group
+# - /c/slb/virt
+# - /c/slb/virt/service
+# - /c/slb/ssl/certs/group
+# - /c/slb/filt
+#
+# Generated Terraform Resources:
+# - alteon_real_server
+# - alteon_server_group
+# - alteon_virtual_server
+# - alteon_virtual_service
+# - alteon_cli_command (fallback for unsupported objects)
+#
+# Author:
+# Michael Schwenke
+#
+# Company:
+# Team-Netz GmbH
+#
+# Repository:
+# https://github.com/team-netz/alteon-to-terraform
+#
+# Version:
+# 0.3.0
+#
+# Release Date:
+# 2026-06-11
+#
+# Python Version:
+# >= 3.11
+#
+# Terraform Provider:
+# Radware/alteon
+#
+# Compatibility:
+# Alteon 31.x
+# Alteon 32.x
+# Alteon 33.x
+#
+# License:
+# Apache License 2.0
+#
+# Copyright 2026 Michael Schwenke
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# Disclaimer:
+# This software is provided without any warranty. Generated Terraform
+# configurations should always be reviewed before deployment to
+# production environments.
+#
+# Changelog:
+#
+# 0.3.0
+# - Added alteon_server_group support
+# - Added alteon_virtual_service support
+# - Added SSL service merging
+# - Added /c/slb/filt detection
+#
+# 0.2.0
+# - Added native alteon_virtual_server resources
+# - Added native alteon_real_server resources
+#
+# 0.1.0
+# - Initial implementation
+# - CLI command based export
+#
+# =============================================================================
+
 '''
-alteon_to_terraform_native_v2.py
-Version: native-v2
+alteon_to_terraform_native_v3.py
+Version: native-v3
 
 Konvertiert ausgewählte Alteon-CLI-Dump-Blöcke in Terraform
 für den Radware/alteon Provider.
@@ -10,7 +103,9 @@ Aktuell:
   - /c/slb/real <id>                 -> alteon_real_server
   - /c/slb/virt <id>                 -> alteon_virtual_server, alle IDs
   - /c/slb/virt <id>/service ...     -> alteon_virtual_service, alle IDs
-  - /c/slb/group <id>                -> alteon_cli_command
+  - /c/slb/group <id>                -> alteon_server_group
+  - /c/slb/filt <id>                 -> alteon_cli_command
+  - /c/slb/filt <id>/...             -> alteon_cli_command
   - /c/slb/ssl/certs/group <id>      -> alteon_cli_command
 
 Bewusst nicht übernommen:
@@ -34,6 +129,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
+__author__ = "Michael Schwenke"
+__company__ = "Team-Netz GmbH"
+__version__ = "0.3.0"
+__license__ = "Apache-2.0"
+__status__ = "Development"
 
 @dataclass
 class Block:
@@ -86,9 +186,13 @@ def parse_alteon_config(text: str) -> list[Block]:
 
 def is_cli_supported_path(path: str) -> bool:
     return bool(
-        re.fullmatch(r"/c/slb/group\s+\S+", path)
-        or re.fullmatch(r"/c/slb/ssl/certs/group\s+\S+", path)
+        re.fullmatch(r"/c/slb/ssl/certs/group\s+\S+", path)
+        or re.fullmatch(r"/c/slb/filt\s+\S+(?:/.+)?", path)
     )
+
+
+def is_group_path(path: str) -> bool:
+    return bool(re.fullmatch(r"/c/slb/group\s+\S+", path))
 
 
 def is_real_path(path: str) -> bool:
@@ -231,6 +335,109 @@ def block_to_real_server(block: Block) -> tuple[str, list[str]] | None:
     ]
     return name, lines
 
+
+
+def block_to_server_group(block: Block) -> tuple[str, list[str]] | None:
+    m = re.fullmatch(r"/c/slb/group\s+(\S+)", block.path)
+    if not m:
+        return None
+
+    index = m.group(1)
+    parsed = parse_commands(block.commands)
+
+    base_attrs: dict[str, Any] = {
+        "ipver": ipver_to_number(one_value(parsed, "ipver")),
+        "name": clean_quote(one_value(parsed, "name")),
+    }
+
+    # Häufige Alteon-CLI-Kommandos, soweit sie direkt zu Provider-Feldern passen.
+    direct_string_keys = {
+        "backup": "backup",
+        "backupgroup": "backupgroup",
+        "backupserver": "backupserver",
+        "healthid": "healthid",
+        "hcid": "healthid",
+        "healthcheckurl": "healthcheckurl",
+        "phashmask": "phashmask",
+    }
+    direct_int_keys = {
+        "metric": "metric",
+        "realthreshold": "realthreshold",
+        "viphealthcheck": "viphealthcheck",
+        "idsstate": "idsstate",
+        "idsport": "idsport",
+        "idsflood": "idsflood",
+        "minmisshash": "minmisshash",
+        "rmetric": "rmetric",
+        "operatoraccess": "operatoraccess",
+        "wlm": "wlm",
+        "slowstart": "slowstart",
+        "minthreshold": "minthreshold",
+        "maxthreshold": "maxthreshold",
+        "backuptype": "backuptype",
+        "phashprefixlength": "phashprefixlength",
+        "type": "type",
+        "idschain": "idschain",
+        "sectype": "sectype",
+        "secdeviceflag": "secdeviceflag",
+        "maxconex": "maxconex",
+    }
+
+    for cli_key, tf_key in direct_string_keys.items():
+        value = clean_quote(one_value(parsed, cli_key))
+        if value:
+            base_attrs[tf_key] = value
+
+    for cli_key, tf_key in direct_int_keys.items():
+        value = one_value(parsed, cli_key)
+        if value and re.fullmatch(r"-?\d+", value):
+            base_attrs[tf_key] = int(value)
+
+    add_servers = [clean_quote(v) for v in parsed.get("add", [])]
+    add_servers = [v for v in add_servers if v]
+
+    res_base = safe_name(f"server_group_{index}")
+    lines: list[str] = []
+
+    # Basis-Resource für die Gruppe selbst. Wenn außer addserver nichts vorhanden ist,
+    # wird der erste addserver hier verwendet, damit elements nicht leer ist.
+    base_elements = {k: v for k, v in base_attrs.items() if v is not None}
+    first_add_in_base = False
+    if not base_elements and add_servers:
+        base_elements["addserver"] = add_servers[0]
+        first_add_in_base = True
+
+    if base_elements:
+        lines.extend([
+            f'resource "alteon_server_group" "{res_base}" {{',
+            f'  index = {hcl_value(index)}',
+            *hcl_block("elements", base_elements, indent=2),
+            "}",
+            "",
+        ])
+
+    remaining_servers = add_servers[1:] if first_add_in_base else add_servers
+    previous_ref = f"alteon_server_group.{res_base}" if base_elements else None
+
+    for server in remaining_servers:
+        member_name = safe_name(f"server_group_{index}_add_{server}")
+        lines.extend([
+            f'resource "alteon_server_group" "{member_name}" {{',
+            f'  index = {hcl_value(index)}',
+        ])
+        if previous_ref:
+            lines.append(f"  depends_on = [{previous_ref}]")
+        lines.extend(hcl_block("elements", {"addserver": server}, indent=2))
+        lines.append("}")
+        lines.append("")
+        previous_ref = f"alteon_server_group.{member_name}"
+
+    if not lines:
+        return None
+
+    while lines and lines[-1] == "":
+        lines.pop()
+    return f"server_group_{index}", lines
 
 def block_to_virtual_server(block: Block) -> tuple[str, list[str]] | None:
     m = re.fullmatch(r"/c/slb/virt\s+(\S+)", block.path)
@@ -408,6 +615,8 @@ def blocks_to_terraform(blocks: Iterable[Block], native: bool = True) -> str:
 
         if native and is_real_path(block.path):
             rendered = block_to_real_server(block)
+        elif native and is_group_path(block.path):
+            rendered = block_to_server_group(block)
         elif native and is_virt_path(block.path):
             rendered = block_to_virtual_server(block)
 
@@ -417,7 +626,7 @@ def blocks_to_terraform(blocks: Iterable[Block], native: bool = True) -> str:
             unique_name(name, native_resource_names)
             out.extend(lines)
             out.append("")
-        elif is_cli_supported_path(block.path):
+        elif is_cli_supported_path(block.path) or (not native and is_group_path(block.path)):
             out.extend(cli_command_to_hcl(block, used_cli_names))
             out.append("")
 
@@ -429,7 +638,7 @@ def blocks_to_terraform(blocks: Iterable[Block], native: bool = True) -> str:
             out.append("")
     else:
         for block in blocks:
-            if is_real_path(block.path) or is_virt_path(block.path) or is_virt_service_path(block.path):
+            if is_real_path(block.path) or is_group_path(block.path) or is_virt_path(block.path) or is_virt_service_path(block.path):
                 out.extend(cli_command_to_hcl(block, used_cli_names))
                 out.append("")
 
@@ -440,6 +649,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Konvertiert Alteon-SLB-Konfigurationsdump in Terraform."
     )
+
+    print(
+        f"Alteon Configuration Converter "
+        f"v{__version__} "
+        f"(c) 2026 Michael Schwenke"
+    )
+
     parser.add_argument("input", type=Path, help="Alteon-Konfigurationsdump")
     parser.add_argument("-o", "--output", type=Path, default=Path("main.tf"), help="Zieldatei, Default: main.tf")
     parser.add_argument(
@@ -457,12 +673,13 @@ def main() -> int:
     relevant = [
         b for b in blocks
         if is_real_path(b.path)
+        or is_group_path(b.path)
         or is_virt_path(b.path)
         or is_virt_service_path(b.path)
         or is_cli_supported_path(b.path)
     ]
 
-    print("alteon_to_terraform_native_v2")
+    print("alteon_to_terraform_native_v3")
     print(f"OK: {len(relevant)} relevante Alteon-Blöcke nach {args.output} geschrieben.")
     print("Modus:", "Native Resources" if not args.cli_only else "CLI only")
     return 0
