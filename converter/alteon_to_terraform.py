@@ -36,7 +36,7 @@
 # https://github.com/team-netz/alteon-to-terraform
 #
 # Version:
-# 0.3.2
+# 0.3.4
 #
 # Release Date:
 # 2026-06-11
@@ -76,6 +76,10 @@
 #
 # Changelog:
 #
+# 0.3.4
+# - Adapted alteon_server_group to declarative servers list model
+# - Groups are now rendered as one resource with flat attributes
+#
 # 0.3.3
 # - Add schema for real Server
 #
@@ -100,8 +104,8 @@
 # =============================================================================
 
 '''
-alteon_to_terraform_native_v3_3.py
-Version: native-v3.3
+alteon_to_terraform_native_v3_4.py
+Version: native-v3.4
 
 Konvertiert ausgewählte Alteon-CLI-Dump-Blöcke in Terraform
 für den Radware/alteon Provider.
@@ -138,7 +142,7 @@ from typing import Any, Iterable
 
 __author__ = "Michael Schwenke"
 __company__ = "Team-Netz GmbH"
-__version__ = "0.3.3"
+__version__ = "0.3.4"
 __license__ = "Apache-2.0"
 __status__ = "Development"
 
@@ -271,7 +275,9 @@ def hcl_value(value: Any) -> str:
         return "true" if value else "false"
     if isinstance(value, int) or isinstance(value, float):
         return str(value)
-    return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
+    if isinstance(value, (list, tuple, set)):
+        return "[" + ", ".join(hcl_value(v) for v in value) + "]"
+    return '"' + str(value).replace("\\", "\\\\").replace('"', '\"') + '"'
 
 
 def hcl_block(name: str, attrs: dict[str, Any], indent: int = 2) -> list[str]:
@@ -438,7 +444,60 @@ def block_to_real_server(block: Block) -> tuple[str, list[str]] | None:
     return name, lines
 
 
+def normalize_group_metric(value: str | None) -> str | None:
+    """Mappt bekannte Alteon-CLI-Metric-Werte auf das neue Provider-Modell."""
+    value = clean_quote(value)
+    if not value:
+        return None
+    v = value.lower().replace("-", "").replace("_", "")
+    mapping = {
+        "roundrobin": "roundrobin",
+        "rr": "roundrobin",
+        "leastconnections": "leastconnections",
+        "leastconns": "leastconnections",
+        "leastconn": "leastconnections",
+        "minmisses": "minmisses",
+        "minmiss": "minmisses",
+        "hash": "hash",
+        "response": "response",
+        "bandwidth": "bandwidth",
+        "phash": "phash",
+        "svcleast": "svcleast",
+        "hrw": "hrw",
+    }
+    return mapping.get(v, value)
+
+
+def normalize_group_health_layer(value: str | None) -> str | None:
+    """Mappt bekannte Health-Check-Layer auf das neue Provider-Modell."""
+    value = clean_quote(value)
+    if not value:
+        return None
+    v = value.lower().replace("-", "").replace("_", "")
+    mapping = {
+        "icmp": "icmp",
+        "ping": "icmp",
+        "tcp": "tcp",
+        "http": "http",
+        "dns": "dns",
+        "smtp": "smtp",
+        "link": "link",
+        "ldap": "ldap",
+    }
+    return mapping.get(v, value)
+
+
 def block_to_server_group(block: Block) -> tuple[str, list[str]] | None:
+    """
+    Neues deklaratives Provider-Modell für alteon_server_group.
+
+    Alt:
+      Eine Resource für die Gruppe plus zusätzliche addserver-Resources.
+
+    Neu:
+      Genau eine Resource pro Gruppe. Mitglieder stehen vollständig in
+      servers = ["..."] und Einstellungen liegen flach direkt in der Resource.
+    """
     m = re.fullmatch(r"/c/slb/group\s+(\S+)", block.path)
     if not m:
         return None
@@ -446,98 +505,71 @@ def block_to_server_group(block: Block) -> tuple[str, list[str]] | None:
     index = m.group(1)
     parsed = parse_commands(block.commands)
 
-    base_attrs: dict[str, Any] = {
-        "ipver": ipver_to_number(one_value(parsed, "ipver")),
-        "name": clean_quote(one_value(parsed, "name")),
+    servers = [clean_quote(v) for v in parsed.get("add", [])]
+    servers = [v for v in servers if v]
+
+    attrs: dict[str, Any] = {
+        "index": index,
     }
 
-    # Häufige Alteon-CLI-Kommandos, soweit sie direkt zu Provider-Feldern passen.
-    direct_string_keys = {
-        "backup": "backup",
-        "backupgroup": "backupgroup",
-        "backupserver": "backupserver",
-        "healthid": "healthid",
-        "hcid": "healthid",
-        "healthcheckurl": "healthcheckurl",
-        "phashmask": "phashmask",
-    }
-    direct_int_keys = {
-        "metric": "metric",
-        "realthreshold": "realthreshold",
-        "viphealthcheck": "viphealthcheck",
-        "idsstate": "idsstate",
-        "idsport": "idsport",
-        "idsflood": "idsflood",
-        "minmisshash": "minmisshash",
-        "rmetric": "rmetric",
-        "operatoraccess": "operatoraccess",
-        "wlm": "wlm",
-        "slowstart": "slowstart",
-        "minthreshold": "minthreshold",
-        "maxthreshold": "maxthreshold",
-        "backuptype": "backuptype",
-        "phashprefixlength": "phashprefixlength",
-        "type": "type",
-        "idschain": "idschain",
-        "sectype": "sectype",
-        "secdeviceflag": "secdeviceflag",
-        "maxconex": "maxconex",
-    }
+    if servers:
+        attrs["servers"] = servers
 
-    for cli_key, tf_key in direct_string_keys.items():
-        value = clean_quote(one_value(parsed, cli_key))
-        if value:
-            base_attrs[tf_key] = value
+    name = clean_quote(one_value(parsed, "name"))
+    if name:
+        attrs["name"] = name
 
-    for cli_key, tf_key in direct_int_keys.items():
-        value = one_value(parsed, cli_key)
-        if value and re.fullmatch(r"-?\d+", value):
-            base_attrs[tf_key] = int(value)
+    metric = normalize_group_metric(one_value(parsed, "metric"))
+    if metric:
+        attrs["metric"] = metric
 
-    add_servers = [clean_quote(v) for v in parsed.get("add", [])]
-    add_servers = [v for v in add_servers if v]
+    # Unterschiedliche Alteon-Dumps nutzen unterschiedliche Schreibweisen.
+    health_layer = (
+        normalize_group_health_layer(one_value(parsed, "healthchecklayer"))
+        or normalize_group_health_layer(one_value(parsed, "health"))
+        or normalize_group_health_layer(one_value(parsed, "healthck"))
+    )
+    if health_layer:
+        attrs["health_check_layer"] = health_layer
 
-    res_base = safe_name(f"server_group_{index}")
-    lines: list[str] = []
+    health_id = clean_quote(one_value(parsed, "healthid")) or clean_quote(one_value(parsed, "hcid"))
+    if health_id:
+        attrs["health_id"] = health_id
 
-    # Basis-Resource für die Gruppe selbst. Wenn außer addserver nichts vorhanden ist,
-    # wird der erste addserver hier verwendet, damit elements nicht leer ist.
-    base_elements = {k: v for k, v in base_attrs.items() if v is not None}
-    first_add_in_base = False
-    if not base_elements and add_servers:
-        base_elements["addserver"] = add_servers[0]
-        first_add_in_base = True
+    backup_server = clean_quote(one_value(parsed, "backupserver"))
+    if backup_server:
+        attrs["backup_server"] = backup_server
 
-    if base_elements:
-        lines.extend([
-            f'resource "alteon_server_group" "{res_base}" {{',
-            f'  index = {hcl_value(index)}',
-            *hcl_block("elements", base_elements, indent=2),
-            "}",
-            "",
-        ])
+    backup_group = clean_quote(one_value(parsed, "backupgroup"))
+    if backup_group:
+        attrs["backup_group"] = backup_group
 
-    remaining_servers = add_servers[1:] if first_add_in_base else add_servers
-    previous_ref = f"alteon_server_group.{res_base}" if base_elements else None
+    real_threshold = one_value(parsed, "realthreshold") or one_value(parsed, "real_threshold")
+    if real_threshold and re.fullmatch(r"-?\d+", real_threshold):
+        attrs["real_threshold"] = int(real_threshold)
 
-    for server in remaining_servers:
-        member_name = safe_name(f"server_group_{index}_add_{server}")
-        lines.extend([
-            f'resource "alteon_server_group" "{member_name}" {{',
-            f'  index = {hcl_value(index)}',
-        ])
-        if previous_ref:
-            lines.append(f"  depends_on = [{previous_ref}]")
-        lines.extend(hcl_block("elements", {"addserver": server}, indent=2))
-        lines.append("}")
-        lines.append("")
-        previous_ref = f"alteon_server_group.{member_name}"
+    slowstart = one_value(parsed, "slowstart")
+    if slowstart and re.fullmatch(r"-?\d+", slowstart):
+        attrs["slowstart"] = int(slowstart)
 
-    if not lines:
-        return None
+    ip_ver = ipver_to_number(one_value(parsed, "ipver"))
+    if ip_ver is not None:
+        attrs["ip_ver"] = ip_ver
 
-    while lines and lines[-1] == "":
-        lines.pop()
+    # Kompatibilität mit älteren CLI-Dumps: "backup" kann je nach Alteon-Kontext
+    # Server oder Gruppe sein. Nur übernehmen, wenn die neue spezifische Variante
+    # nicht bereits gesetzt wurde. Ohne eindeutige Info wird es als backup_server
+    # interpretiert, weil das dem klassischen Real-Server-Fallback entspricht.
+    backup = clean_quote(one_value(parsed, "backup"))
+    if backup and "backup_server" not in attrs and "backup_group" not in attrs:
+        attrs["backup_server"] = backup
+
+    res_name = safe_name(f"server_group_{index}")
+    lines = [f'resource "alteon_server_group" "{res_name}" {{']
+    for key, value in attrs.items():
+        lines.append(f"  {key} = {hcl_value(value)}")
+    lines.append("}")
+
     return f"server_group_{index}", lines
 
 def block_to_virtual_server(block: Block) -> tuple[str, list[str]] | None:
@@ -910,7 +942,7 @@ def main() -> int:
         or is_cli_supported_path(b.path)
     ]
 
-    print("alteon_to_terraform_native_v3_3")
+    print("alteon_to_terraform_native_v3_4")
     print(f"OK: {len(relevant)} relevante Alteon-Blöcke nach {args.output} geschrieben.")
     if args.import_file:
         print(f"OK: {len(generated_imports)} Import-Blöcke nach {args.import_file} geschrieben.")
