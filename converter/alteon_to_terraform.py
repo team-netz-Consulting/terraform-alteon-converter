@@ -36,7 +36,7 @@
 # https://github.com/team-netz/alteon-to-terraform
 #
 # Version:
-# 0.3.4
+# 0.3.6
 #
 # Release Date:
 # 2026-06-11
@@ -76,6 +76,12 @@
 #
 # Changelog:
 #
+# 0.3.6
+# - Restrict alteon_server_group output to the new declarative provider schema
+# - Map group ipver v4/v6 to ip_ver 1/2
+# - Map group health <layer> to health_check_layer
+# - Keep group metric as normalized provider string
+#
 # 0.3.4
 # - Adapted alteon_server_group to declarative servers list model
 # - Groups are now rendered as one resource with flat attributes
@@ -104,8 +110,8 @@
 # =============================================================================
 
 '''
-alteon_to_terraform_native_v3_4.py
-Version: native-v3.4
+alteon_to_terraform_native_v3_6.py
+Version: native-v3.6
 
 Konvertiert ausgewählte Alteon-CLI-Dump-Blöcke in Terraform
 für den Radware/alteon Provider.
@@ -126,10 +132,10 @@ Bewusst nicht übernommen:
 Hinweis:
   Der Provider arbeitet teilweise mit numerischen Enum-Werten.
   Die wichtigsten Werte werden hier pragmatisch gemappt:
-    ena/enabled/e -> 1
-    dis/disabled/d -> 2
-    ipver v4 -> 4
-    ipver v6 -> 6
+    ena/enabled/e -> 2
+    dis/disabled/d -> 3
+    ipver v4 -> 1
+    ipver v6 -> 2
 '''
 
 from __future__ import annotations
@@ -142,7 +148,7 @@ from typing import Any, Iterable
 
 __author__ = "Michael Schwenke"
 __company__ = "Team-Netz GmbH"
-__version__ = "0.3.4"
+__version__ = "0.3.6"
 __license__ = "Apache-2.0"
 __status__ = "Development"
 
@@ -253,9 +259,9 @@ def clean_quote(value: str | None) -> str | None:
 def enum_enable(value: str) -> int:
     v = value.lower()
     if v in {"ena", "enabled", "enable", "e", "on"}:
-        return 1
-    if v in {"dis", "disabled", "disable", "d", "off"}:
         return 2
+    if v in {"dis", "disabled", "disable", "d", "off"}:
+        return 3
     raise ValueError(f"Unbekannter Enable/Disable-Wert: {value}")
 
 
@@ -264,10 +270,31 @@ def ipver_to_number(value: str | None) -> int | None:
         return None
     v = value.lower().strip()
     if v == "v4":
-        return 4
+        return 1
     if v == "v6":
-        return 6
+        return 2
     return None
+
+
+def group_ipver_to_number(value: str | None) -> int | None:
+    """Provider-Schema für alteon_server_group: 1=ipv4, 2=ipv6, 3=mixed."""
+    if value is None:
+        return None
+    v = clean_quote(value) or value
+    v = v.lower().strip()
+    mapping = {
+        "v4": 1,
+        "ipv4": 1,
+        "4": 1,
+        "1": 1,
+        "v6": 2,
+        "ipv6": 2,
+        "6": 2,
+        "2": 2,
+        "mixed": 3,
+        "3": 3,
+    }
+    return mapping.get(v)
 
 
 def hcl_value(value: Any) -> str:
@@ -336,9 +363,9 @@ def block_to_real_server(block: Block) -> tuple[str, list[str]] | None:
     }
 
     if "ena" in parsed:
-        attrs["state"] = 1
-    elif "dis" in parsed:
         attrs["state"] = 2
+    elif "dis" in parsed:
+        attrs["state"] = 3
 
     # Direkt abbildbare String-Felder aus dem Provider-Schema.
     direct_string_keys = {
@@ -445,46 +472,64 @@ def block_to_real_server(block: Block) -> tuple[str, list[str]] | None:
 
 
 def normalize_group_metric(value: str | None) -> str | None:
-    """Mappt bekannte Alteon-CLI-Metric-Werte auf das neue Provider-Modell."""
+    """Mappt Alteon-CLI-/Import-Metric-Werte auf das neue Provider-Modell."""
     value = clean_quote(value)
     if not value:
         return None
     v = value.lower().replace("-", "").replace("_", "")
     mapping = {
+        "1": "roundrobin",
         "roundrobin": "roundrobin",
         "rr": "roundrobin",
+        "2": "leastconnections",
         "leastconnections": "leastconnections",
         "leastconns": "leastconnections",
         "leastconn": "leastconnections",
+        "3": "minmisses",
         "minmisses": "minmisses",
         "minmiss": "minmisses",
+        "4": "hash",
         "hash": "hash",
+        "5": "response",
         "response": "response",
+        "6": "bandwidth",
         "bandwidth": "bandwidth",
+        "7": "phash",
         "phash": "phash",
+        "8": "svcleast",
         "svcleast": "svcleast",
+        "9": "hrw",
         "hrw": "hrw",
     }
-    return mapping.get(v, value)
+    return mapping.get(v)
 
 
 def normalize_group_health_layer(value: str | None) -> str | None:
-    """Mappt bekannte Health-Check-Layer auf das neue Provider-Modell."""
+    """Mappt Alteon-CLI-/Import-Health-Layer auf das neue Provider-Modell."""
     value = clean_quote(value)
     if not value:
         return None
     v = value.lower().replace("-", "").replace("_", "")
     mapping = {
+        "1": "icmp",
         "icmp": "icmp",
         "ping": "icmp",
+        "2": "tcp",
         "tcp": "tcp",
+        "3": "http",
         "http": "http",
+        "44": "http",
+        "httphead": "http",
+        "4": "dns",
         "dns": "dns",
+        "5": "smtp",
         "smtp": "smtp",
+        "28": "link",
         "link": "link",
+        "31": "ldap",
         "ldap": "ldap",
     }
-    return mapping.get(v, value)
+    return mapping.get(v)
 
 
 def block_to_server_group(block: Block) -> tuple[str, list[str]] | None:
@@ -526,13 +571,15 @@ def block_to_server_group(block: Block) -> tuple[str, list[str]] | None:
     # Unterschiedliche Alteon-Dumps nutzen unterschiedliche Schreibweisen.
     health_layer = (
         normalize_group_health_layer(one_value(parsed, "healthchecklayer"))
+        or normalize_group_health_layer(one_value(parsed, "health_check_layer"))
         or normalize_group_health_layer(one_value(parsed, "health"))
         or normalize_group_health_layer(one_value(parsed, "healthck"))
+        or normalize_group_health_layer(one_value(parsed, "hc"))
     )
     if health_layer:
         attrs["health_check_layer"] = health_layer
 
-    health_id = clean_quote(one_value(parsed, "healthid")) or clean_quote(one_value(parsed, "hcid"))
+    health_id = clean_quote(one_value(parsed, "healthid")) or clean_quote(one_value(parsed, "health_id")) or clean_quote(one_value(parsed, "hcid"))
     if health_id:
         attrs["health_id"] = health_id
 
@@ -552,7 +599,7 @@ def block_to_server_group(block: Block) -> tuple[str, list[str]] | None:
     if slowstart and re.fullmatch(r"-?\d+", slowstart):
         attrs["slowstart"] = int(slowstart)
 
-    ip_ver = ipver_to_number(one_value(parsed, "ipver"))
+    ip_ver = group_ipver_to_number(one_value(parsed, "ipver"))
     if ip_ver is not None:
         attrs["ip_ver"] = ip_ver
 
@@ -591,9 +638,9 @@ def block_to_virtual_server(block: Block) -> tuple[str, list[str]] | None:
     }
 
     if "ena" in parsed:
-        attrs["virtserverstate"] = 1
-    elif "dis" in parsed:
         attrs["virtserverstate"] = 2
+    elif "dis" in parsed:
+        attrs["virtserverstate"] = 3
 
     # Mapping gemäß alteon_virtual_server Schema.
     # Nur direkt erkennbare Alteon-CLI-Keys werden gesetzt.
@@ -942,7 +989,7 @@ def main() -> int:
         or is_cli_supported_path(b.path)
     ]
 
-    print("alteon_to_terraform_native_v3_4")
+    print("alteon_to_terraform_native_v3_6")
     print(f"OK: {len(relevant)} relevante Alteon-Blöcke nach {args.output} geschrieben.")
     if args.import_file:
         print(f"OK: {len(generated_imports)} Import-Blöcke nach {args.import_file} geschrieben.")

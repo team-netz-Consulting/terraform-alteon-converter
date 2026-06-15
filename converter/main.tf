@@ -8,13 +8,13 @@ terraform {
 
 resource "alteon_cli_command" "cli_ssl_certs_group_242" {
   elements {
-    agalteonclicommand = "/c/slb/ssl/certs/group 242/type certificate/chainmod keyid/add \"1001\""
+    agalteonclicommand = "/c/slb/ssl/certs/group 242/type certificate/chainmod keyid/add "1001""
   }
 }
 
 resource "alteon_cli_command" "cli_ssl_certs_group_442" {
   elements {
-    agalteonclicommand = "/c/slb/ssl/certs/group 442/type certificate/chainmod keyid/add \"1001\""
+    agalteonclicommand = "/c/slb/ssl/certs/group 442/type certificate/chainmod keyid/add "1001""
   }
 }
 
@@ -22,8 +22,8 @@ resource "alteon_real_server" "real_server_101102" {
   index = "101102"
   elements {
     ipaddr = "192.168.101.102"
-    ipver = 4
-    state = 1
+    ipver = 1
+    state = 2
   }
 }
 
@@ -31,8 +31,8 @@ resource "alteon_real_server" "real_server_101102_a" {
   index = "101102-a"
   elements {
     ipaddr = "192.168.101.102"
-    ipver = 4
-    state = 1
+    ipver = 1
+    state = 2
   }
 }
 
@@ -40,8 +40,8 @@ resource "alteon_real_server" "real_server_101102_b" {
   index = "101102-b"
   elements {
     ipaddr = "192.168.101.102"
-    ipver = 4
-    state = 1
+    ipver = 1
+    state = 2
   }
 }
 
@@ -49,41 +49,44 @@ resource "alteon_real_server" "real_server_101103" {
   index = "101103"
   elements {
     ipaddr = "192.168.101.103"
-    ipver = 4
-    state = 1
+    ipver = 1
+    state = 2
   }
 }
 
-resource "alteon_cli_command" "cli_group_1000" {
-  elements {
-    agalteonclicommand = "/c/slb/group 1000/ipver v4/add 101102"
-  }
+resource "alteon_server_group" "server_group_1000" {
+  index = "1000"
+  servers = ["101102"]
+  ip_ver = 1
 }
 
-resource "alteon_cli_command" "cli_group_1010" {
-  elements {
-    agalteonclicommand = "/c/slb/group 1010/ipver v4/add 101102-a"
-  }
+resource "alteon_server_group" "server_group_1010" {
+  index = "1010"
+  servers = ["101102-a"]
+  ip_ver = 1
 }
 
-resource "alteon_cli_command" "cli_group_1020" {
-  elements {
-    agalteonclicommand = "/c/slb/group 1020/ipver v4/add 101102-b"
-  }
+resource "alteon_server_group" "server_group_1020" {
+  index = "1020"
+  servers = ["101102-b"]
+  ip_ver = 1
 }
 
-resource "alteon_cli_command" "cli_group_1030" {
-  elements {
-    agalteonclicommand = "/c/slb/group 1030/ipver v4/add 101102-a/add 101103"
-  }
+resource "alteon_server_group" "server_group_1030" {
+  index = "1030"
+  servers = ["101102-a", "101103"]
+  name = "test_server_group_1030"
+  metric = "roundrobin"
+  health_check_layer = "icmp"
+  ip_ver = 1
 }
 
 resource "alteon_virtual_server" "virtual_server_1000" {
   index = "1000"
   elements {
     virtserveripaddress = "10.2.0.213"
-    virtserveripver = 4
-    virtserverstate = 2
+    virtserveripver = 1
+    virtserverstate = 3
   }
 }
 
@@ -91,8 +94,8 @@ resource "alteon_virtual_server" "virtual_server_1010" {
   index = "1010"
   elements {
     virtserveripaddress = "10.2.0.213"
-    virtserveripver = 4
-    virtserverstate = 2
+    virtserveripver = 1
+    virtserverstate = 3
   }
 }
 
@@ -100,8 +103,8 @@ resource "alteon_virtual_server" "virtual_server_1020" {
   index = "1020"
   elements {
     virtserveripaddress = "10.2.0.213"
-    virtserveripver = 4
-    virtserverstate = 2
+    virtserveripver = 1
+    virtserverstate = 3
   }
 }
 
@@ -109,8 +112,26 @@ resource "alteon_virtual_server" "virtual_server_1030" {
   index = "1030"
   elements {
     virtserveripaddress = "10.2.0.213"
-    virtserveripver = 4
-    virtserverstate = 2
+    virtserveripver = 1
+    virtserverstate = 3
+  }
+}
+
+resource "alteon_cli_command" "cli_filt_1" {
+  elements {
+    agalteonclicommand = "/c/slb/filt 1/dis/action redir/ipver v4/sip 10.12.25.13/smask 255.255.255.255/dip 10.12.148.220/dmask 255.255.255.255/proto tcp/dport https/group 1000/rport 8080/vlan any/applic http"
+  }
+}
+
+resource "alteon_cli_command" "cli_filt_1_ssl" {
+  elements {
+    agalteonclicommand = "/c/slb/filt 1/ssl/srvrcert cert 1001/sslpol system_pki_auth"
+  }
+}
+
+resource "alteon_cli_command" "cli_filt_1_adv_redir" {
+  elements {
+    agalteonclicommand = "/c/slb/filt 1/adv/redir/dbind forceproxy/rtproxy ena"
   }
 }
 
