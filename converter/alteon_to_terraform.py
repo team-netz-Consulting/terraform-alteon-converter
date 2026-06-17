@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 #
 # =============================================================================
 # Alteon Configuration to Terraform Converter
@@ -9,21 +10,26 @@
 #
 # Description:
 # Converts Radware Alteon configuration dumps into Terraform resources
-# using the official Radware Alteon Terraform Provider.
+# using the Radware Alteon Terraform Provider.
 #
 # Supported Objects:
 # - /c/slb/real
 # - /c/slb/group
 # - /c/slb/virt
 # - /c/slb/virt/service
+# - /c/slb/ssl/sslpol
 # - /c/slb/ssl/certs/group
+# - /c/slb/advhc/health
 # - /c/slb/filt
+# - /c/l3/vrrp/vr
 #
 # Generated Terraform Resources:
 # - alteon_real_server
 # - alteon_server_group
 # - alteon_virtual_server
 # - alteon_virtual_service
+# - alteon_ssl_policy
+# - alteon_http2_policy
 # - alteon_cli_command (fallback for unsupported objects)
 #
 # Author:
@@ -36,10 +42,10 @@
 # https://github.com/team-netz/alteon-to-terraform
 #
 # Version:
-# 0.3.6
+# 0.4.3
 #
 # Release Date:
-# 2026-06-11
+# 2026-06-17
 #
 # Python Version:
 # >= 3.11
@@ -55,7 +61,8 @@
 # License:
 # Apache License 2.0
 #
-# Copyright 2026 Michael Schwenke
+# Copyright:
+# Copyright (c) 2026 Michael Schwenke
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -76,8 +83,26 @@
 #
 # Changelog:
 #
+# 0.4.3
+# - Group virtual servers and their virtual services together in output
+#
+# 0.4.2
+# - Added native alteon_server_group support using declarative servers set
+#
+# 0.4.1
+# - Added /c/slb/advhc/health detection
+# - Added SSL certificate group handling
+# - Improved SSL policy conversion
+# - Added support for VRRP configuration detection
+# 0.4.0
+# - Migrated to flat provider resource model
+# - Added alteon_ssl_policy resource support
+# - Added alteon_http2_policy resource support
+# - Added native alteon_virtual_service mapping
+# - Added import generation for SSL policies
+#
 # 0.3.6
-# - Restrict alteon_server_group output to the new declarative provider schema
+# - Restrict alteon_server_group output to declarative provider schema
 # - Map group ipver v4/v6 to ip_ver 1/2
 # - Map group health <layer> to health_check_layer
 # - Keep group metric as normalized provider string
@@ -87,10 +112,10 @@
 # - Groups are now rendered as one resource with flat attributes
 #
 # 0.3.3
-# - Add schema for real Server
+# - Added schema support for alteon_real_server
 #
 # 0.3.2
-# - Added Terraform import file generation with -i/--import-file
+# - Added Terraform import file generation (-i/--import-file)
 # - Added extended alteon_virtual_server field mapping
 #
 # 0.3.0
@@ -109,48 +134,105 @@
 #
 # =============================================================================
 
-'''
-alteon_to_terraform_native_v3_6.py
-Version: native-v3.6
+"""
+alteon_to_terraform_flat_v4_3.py
+Version: 0.4.3
 
-Konvertiert ausgewählte Alteon-CLI-Dump-Blöcke in Terraform
-für den Radware/alteon Provider.
+Converts selected Radware Alteon configuration sections into
+Terraform resources for the Alteon Terraform Provider.
 
-Aktuell:
-  - /c/slb/real <id>                 -> alteon_real_server
-  - /c/slb/virt <id>                 -> alteon_virtual_server, alle IDs
-  - /c/slb/virt <id>/service ...     -> alteon_virtual_service, alle IDs
-  - /c/slb/group <id>                -> alteon_server_group
-  - /c/slb/filt <id>                 -> alteon_cli_command
-  - /c/slb/filt <id>/...             -> alteon_cli_command
-  - /c/slb/ssl/certs/group <id>      -> alteon_cli_command
+Currently supported:
 
-Bewusst nicht übernommen:
-  - Private Keys, Zertifikats-Payloads, Requests
-  - Nicht genannte Alteon-Kontexte
+Native Resources:
+- /c/slb/real                    -> alteon_real_server
+- /c/slb/group                   -> alteon_server_group
+- /c/slb/virt                    -> alteon_virtual_server
+- /c/slb/virt/service            -> alteon_virtual_service
+- /c/slb/ssl/sslpol             -> alteon_ssl_policy
+- /c/slb/http2/*                -> alteon_http2_policy
 
-Hinweis:
-  Der Provider arbeitet teilweise mit numerischen Enum-Werten.
-  Die wichtigsten Werte werden hier pragmatisch gemappt:
-    ena/enabled/e -> 2
-    dis/disabled/d -> 3
-    ipver v4 -> 1
-    ipver v6 -> 2
-'''
+CLI Fallback Resources:
+- /c/slb/filt
+- /c/slb/advhc/health
+- /c/slb/ssl/certs/group
+- /c/l3/vrrp/vr
+
+Import generation:
+- alteon_real_server
+- alteon_server_group
+- alteon_virtual_server
+- alteon_virtual_service
+- alteon_ssl_policy
+- alteon_http2_policy
+
+Intentionally ignored:
+- Private keys
+- Certificate payloads
+- Certificate requests
+- Unsupported Alteon contexts
+
+Enum Mapping:
+
+```
+Enable:
+    ena / enabled / e -> 2
+    dis / disabled / d -> 3
+
+IP Version:
+    v4 -> 1
+    v6 -> 2
+
+Import IDs:
+    Real Server      -> <index>
+    Server Group     -> <index>
+    Virtual Server   -> <index>
+    SSL Policy       -> <name>
+    Virtual Service  -> <virt_id>/<service_port>
+```
+
+"""
 
 from __future__ import annotations
 
 import argparse
 import re
+import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
 __author__ = "Michael Schwenke"
 __company__ = "Team-Netz GmbH"
-__version__ = "0.3.6"
+__version__ = "0.4.3"
 __license__ = "Apache-2.0"
 __status__ = "Development"
+
+
+ENABLE_MAP = {
+    "ena": 2,
+    "enabled": 2,
+    "enable": 2,
+    "e": 2,
+    "on": 2,
+    "dis": 3,
+    "disabled": 3,
+    "disable": 3,
+    "d": 3,
+    "off": 3,
+}
+
+BOOL_ENABLE_MAP = {
+    "ena": 1,
+    "enabled": 1,
+    "enable": 1,
+    "e": 1,
+    "on": 1,
+    "dis": 2,
+    "disabled": 2,
+    "disable": 2,
+    "d": 2,
+    "off": 2,
+}
 
 
 @dataclass
@@ -166,7 +248,6 @@ def parse_alteon_config(text: str) -> list[Block]:
 
     for raw_line in text.splitlines():
         stripped = raw_line.strip()
-
         if not stripped:
             continue
 
@@ -186,10 +267,8 @@ def parse_alteon_config(text: str) -> list[Block]:
             if current:
                 blocks.append(current)
             current = None
-
             if stripped == "/":
                 continue
-
             current = Block(path=stripped)
             continue
 
@@ -202,46 +281,26 @@ def parse_alteon_config(text: str) -> list[Block]:
     return blocks
 
 
-def is_cli_supported_path(path: str) -> bool:
-    return bool(
-        re.fullmatch(r"/c/slb/ssl/certs/group\s+\S+", path)
-        or re.fullmatch(r"/c/slb/filt\s+\S+(?:/.+)?", path)
-    )
-
-
-def is_group_path(path: str) -> bool:
-    return bool(re.fullmatch(r"/c/slb/group\s+\S+", path))
-
-
-def is_real_path(path: str) -> bool:
-    return bool(re.fullmatch(r"/c/slb/real\s+\S+", path))
-
-
-def is_virt_path(path: str) -> bool:
-    return bool(re.fullmatch(r"/c/slb/virt\s+\S+", path))
-
-
-def is_virt_service_path(path: str) -> bool:
-    return bool(parse_service_header(path))
-
-
-def is_virt_service_ssl_path(path: str) -> bool:
-    parsed = parse_service_header(path)
-    return bool(parsed and parsed[3])
+def split_cmd(cmd: str) -> list[str]:
+    try:
+        return shlex.split(cmd)
+    except ValueError:
+        return cmd.split()
 
 
 def parse_commands(commands: list[str]) -> dict[str, list[str]]:
     parsed: dict[str, list[str]] = {}
     for cmd in commands:
-        parts = cmd.split()
+        parts = split_cmd(cmd)
         if not parts:
             continue
-        parsed.setdefault(parts[0], []).append(" ".join(parts[1:]))
+        key = parts[0].lower()
+        parsed.setdefault(key, []).append(" ".join(parts[1:]))
     return parsed
 
 
 def one_value(parsed: dict[str, list[str]], key: str) -> str | None:
-    values = parsed.get(key)
+    values = parsed.get(key.lower())
     if not values:
         return None
     return values[-1]
@@ -256,44 +315,32 @@ def clean_quote(value: str | None) -> str | None:
     return value
 
 
-def enum_enable(value: str) -> int:
-    v = value.lower()
-    if v in {"ena", "enabled", "enable", "e", "on"}:
-        return 2
-    if v in {"dis", "disabled", "disable", "d", "off"}:
-        return 3
-    raise ValueError(f"Unbekannter Enable/Disable-Wert: {value}")
-
-
-def ipver_to_number(value: str | None) -> int | None:
-    if value is None:
+def as_int_or_enum(value: str | None, enum_map: dict[str, int] | None = None) -> int | None:
+    value = clean_quote(value)
+    if not value:
         return None
-    v = value.lower().strip()
-    if v == "v4":
-        return 1
-    if v == "v6":
-        return 2
+    if re.fullmatch(r"-?\d+", value):
+        return int(value)
+    if enum_map:
+        return enum_map.get(value.lower())
     return None
 
 
-def group_ipver_to_number(value: str | None) -> int | None:
-    """Provider-Schema für alteon_server_group: 1=ipv4, 2=ipv6, 3=mixed."""
-    if value is None:
+def enum_enable(value: str | None) -> int | None:
+    return as_int_or_enum(value, ENABLE_MAP)
+
+
+def enum_bool_enable(value: str | None) -> int | None:
+    return as_int_or_enum(value, BOOL_ENABLE_MAP)
+
+
+def ipver_to_number(value: str | None) -> int | None:
+    """New flat provider convention: 1=IPv4, 2=IPv6."""
+    value = clean_quote(value)
+    if not value:
         return None
-    v = clean_quote(value) or value
-    v = v.lower().strip()
-    mapping = {
-        "v4": 1,
-        "ipv4": 1,
-        "4": 1,
-        "1": 1,
-        "v6": 2,
-        "ipv6": 2,
-        "6": 2,
-        "2": 2,
-        "mixed": 3,
-        "3": 3,
-    }
+    v = value.lower().strip()
+    mapping = {"v4": 1, "ipv4": 1, "4": 1, "1": 1, "v6": 2, "ipv6": 2, "6": 2, "2": 2}
     return mapping.get(v)
 
 
@@ -304,17 +351,16 @@ def hcl_value(value: Any) -> str:
         return str(value)
     if isinstance(value, (list, tuple, set)):
         return "[" + ", ".join(hcl_value(v) for v in value) + "]"
-    return '"' + str(value).replace("\\", "\\\\").replace('"', '\"') + '"'
+    return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def hcl_block(name: str, attrs: dict[str, Any], indent: int = 2) -> list[str]:
-    pad = " " * indent
-    lines = [f"{pad}{name} {{"]
+def hcl_resource(resource_type: str, name: str, attrs: dict[str, Any]) -> list[str]:
+    lines = [f'resource "{resource_type}" "{safe_name(name)}" {{']
     for key, value in attrs.items():
         if value is None:
             continue
-        lines.append(f"{pad}  {key} = {hcl_value(value)}")
-    lines.append(f"{pad}}}")
+        lines.append(f"  {key} = {hcl_value(value)}")
+    lines.append("}")
     return lines
 
 
@@ -344,21 +390,94 @@ def cli_line(block: Block) -> str:
     return "/".join([block.path] + block.commands)
 
 
-def block_to_real_server(block: Block) -> tuple[str, list[str]] | None:
-    m = re.fullmatch(r"/c/slb/real\s+(\S+)", block.path)
+def path_id(pattern: str, path: str) -> str | None:
+    m = re.fullmatch(pattern, path)
     if not m:
         return None
+    return m.group(1)
 
-    index = m.group(1)
+
+def is_real_path(path: str) -> bool:
+    return bool(re.fullmatch(r"/c/slb/real\s+\S+", path))
+
+
+def is_real_subpath(path: str) -> bool:
+    return bool(re.fullmatch(r"/c/slb/real\s+\S+/.+", path))
+
+
+def is_group_path(path: str) -> bool:
+    return bool(re.fullmatch(r"/c/slb/group\s+\S+", path))
+
+
+def is_virt_path(path: str) -> bool:
+    return bool(re.fullmatch(r"/c/slb/virt\s+\S+", path))
+
+
+def parse_service_header(path: str) -> tuple[str, int, str | None, str | None] | None:
+    # /c/slb/virt 21/service 443 https
+    # /c/slb/virt 21/service 443 https/http
+    # /c/slb/virt 21/service 443 https/ssl
+    m = re.fullmatch(r"/c/slb/virt\s+(\S+)/service\s+(\d+)(?:\s+([^/]+))?(?:/(.+))?", path)
+    if not m:
+        return None
+    virt_id = m.group(1)
+    port = int(m.group(2))
+    proto = m.group(3).strip() if m.group(3) else None
+    suffix = m.group(4)
+    return virt_id, port, proto, suffix
+
+
+def is_virt_service_path(path: str) -> bool:
+    return bool(parse_service_header(path))
+
+
+def is_ssl_policy_path(path: str) -> bool:
+    return bool(re.fullmatch(r"/c/slb/ssl/sslpol\s+[^/\s]+(?:/.+)?", path))
+
+
+def is_http2_policy_path(path: str) -> bool:
+    return bool(
+        re.fullmatch(r"/c/slb/(?:accel/)?http2/(?:pol|policy)\s+\S+(?:/.+)?", path)
+        or re.fullmatch(r"/c/slb/http2pol\s+\S+(?:/.+)?", path)
+    )
+
+
+def is_vrrp_path(path: str) -> bool:
+    return bool(re.fullmatch(r"/c/l3/vrrp/vr\s+\S+(?:/.+)?", path))
+
+
+def is_advhc_health_path(path: str) -> bool:
+    return bool(re.fullmatch(r"/c/slb/advhc/health\s+\S+(?:\s+\S+)?(?:/.+)?", path))
+
+
+def is_ssl_cert_group_path(path: str) -> bool:
+    return bool(re.fullmatch(r"/c/slb/ssl/certs/group\s+\S+", path))
+
+
+def is_cli_supported_path(path: str) -> bool:
+    return bool(
+        is_ssl_cert_group_path(path)
+        or is_advhc_health_path(path)
+        or re.fullmatch(r"/c/slb/filt\s+\S+(?:/.+)?", path)
+        or is_real_subpath(path)
+        or is_vrrp_path(path)
+    )
+
+
+def block_to_real_server(block: Block) -> tuple[str, list[str]] | None:
+    index = path_id(r"/c/slb/real\s+(\S+)", block.path)
+    if not index:
+        return None
+
     parsed = parse_commands(block.commands)
-
-    ipaddr = one_value(parsed, "rip") or one_value(parsed, "ipaddr")
+    ipaddr = clean_quote(one_value(parsed, "rip") or one_value(parsed, "ipaddr"))
     if not ipaddr:
         return None
 
     attrs: dict[str, Any] = {
-        "ipaddr": ipaddr,
-        "ipver": ipver_to_number(one_value(parsed, "ipver")),
+        "index": index,
+        "ip_addr": ipaddr,
+        "ip_ver": ipver_to_number(one_value(parsed, "ipver")),
         "name": clean_quote(one_value(parsed, "name")),
     }
 
@@ -367,196 +486,151 @@ def block_to_real_server(block: Block) -> tuple[str, list[str]] | None:
     elif "dis" in parsed:
         attrs["state"] = 3
 
-    # Direkt abbildbare String-Felder aus dem Provider-Schema.
-    direct_string_keys = {
-        "ipv6addr": "ipv6addr",
-        "copy": "copy",
-        "portsingress": "portsingress",
-        "portsegress": "portsegress",
-        "urlbmap": "urlbmap",
-        "proxyipaddress": "proxyipaddress",
-        "proxyipaddr": "proxyipaddress",
-        "proxyipmask": "proxyipmask",
-        "proxyipv6address": "proxyipv6address",
-        "proxyipv6addr": "proxyipv6address",
-        "proxyipnwclass": "proxyipnwclass",
+    string_keys = {
+        "ipv6addr": "ipv6_addr",
+        "proxyipaddress": "proxy_ip_addr",
+        "proxyipaddr": "proxy_ip_addr",
+        "proxyipmask": "proxy_ip_mask",
+        "proxyipv6address": "proxy_ipv6_addr",
+        "proxyipv6addr": "proxy_ipv6_addr",
+        "proxyipnwclass": "proxy_ip_n_wclass",
         "oid": "oid",
-        "commstring": "commstring",
-        "backup": "backup",
-        "healthid": "healthid",
-        "hcid": "healthid",
+        "commstring": "comm_string",
+        "backup": "back_up",
+        "health": "health_id",
+        "healthid": "health_id",
+        "hcid": "health_id",
     }
-
-    # Integer-Felder aus dem Provider-Schema. Werte können je nach Alteon-CLI
-    # numerisch oder als ena/dis geschrieben sein; beides wird behandelt.
-    direct_int_keys = {
+    int_keys = {
         "weight": "weight",
-        "maxconns": "maxconns",
-        "maxconn": "maxconns",
-        "timeout": "timeout",
-        "pinginterval": "pinginterval",
-        "pingint": "pinginterval",
-        "failretry": "failretry",
-        "succretry": "succretry",
-        "deletestatus": "deletestatus",
+        "maxconns": "max_conns",
+        "maxconn": "max_conns",
+        "timeout": "time_out",
+        "pinginterval": "ping_interval",
+        "pingint": "ping_interval",
+        "failretry": "fail_retry",
+        "succretry": "succ_retry",
         "type": "type",
-        "addurl": "addurl",
-        "remurl": "remurl",
         "cookie": "cookie",
-        "excludestr": "excludestr",
+        "excludestr": "exclude_str",
         "submac": "submac",
         "idsport": "idsport",
-        "nxtrportidx": "nxtrportidx",
-        "nxtbuddyidx": "nxtbuddyidx",
-        "llbtype": "llbtype",
-        "addportsingress": "addportsingress",
-        "remportsingress": "remportsingress",
-        "addportsegress": "addportsegress",
-        "remportsegress": "remportsegress",
-        "vlaningress": "vlaningress",
-        "vlanegress": "vlanegress",
-        "egressif": "egressif",
-        "sectype": "sectype",
-        "ingressif": "ingressif",
-        "secdeviceflag": "secdeviceflag",
+        "nxtrportidx": "nxt_rport_idx",
+        "nxtbuddyidx": "nxt_buddy_idx",
+        "llbtype": "llb_type",
+        "vlaningress": "vlan_ingress",
+        "vlanegress": "vlan_egress",
+        "egressif": "egress_if",
+        "sectype": "sec_type",
+        "ingressif": "ingress_if",
+        "secdeviceflag": "sec_device_flag",
         "ingport": "ingport",
         "proxy": "proxy",
         "ldapwr": "ldapwr",
         "idsvlan": "idsvlan",
         "avail": "avail",
-        "fasthealthcheck": "fasthealthcheck",
+        "fasthealthcheck": "fast_health_check",
         "subdmac": "subdmac",
         "overflow": "overflow",
-        "bkppreempt": "bkppreempt",
+        "bkppreempt": "bkp_preempt",
         "mode": "mode",
-        "updateallrealservers": "updateallrealservers",
-        "proxyipmode": "proxyipmode",
-        "proxyipv6prefix": "proxyipv6prefix",
-        "proxyippersistency": "proxyippersistency",
-        "proxyipnwclasspersistency": "proxyipnwclasspersistency",
+        "proxyipmode": "proxy_ip_mode",
+        "proxyipv6prefix": "proxy_ipv6_prefix",
+        "proxyippersistency": "proxy_ip_persistency",
+        "proxyipnwclasspersistency": "proxy_ip_n_wclass_persistency",
         "ingvlan": "ingvlan",
-        "criticalconnthrsh": "criticalconnthrsh",
-        "highconnthrsh": "highconnthrsh",
-        "uploadbandwidth": "uploadbandwidth",
-        "downloadbandwidth": "downloadbandwidth",
+        "criticalconnthrsh": "critical_conn_thrsh",
+        "highconnthrsh": "high_conn_thrsh",
+        "uploadbandwidth": "upload_band_width",
+        "downloadbandwidth": "download_band_width",
     }
 
-    for cli_key, tf_key in direct_string_keys.items():
+    for cli_key, tf_key in string_keys.items():
         value = clean_quote(one_value(parsed, cli_key))
         if value:
             attrs[tf_key] = value
 
-    for cli_key, tf_key in direct_int_keys.items():
-        value = one_value(parsed, cli_key)
-        if not value:
-            continue
-        value = clean_quote(value) or value
-        if re.fullmatch(r"-?\d+", value):
-            attrs[tf_key] = int(value)
-        else:
-            try:
-                attrs[tf_key] = enum_enable(value)
-            except ValueError:
-                # Unbekannte Text-Enums werden bewusst ausgelassen, damit die
-                # erzeugte HCL nicht mit falschem Typ invalid wird.
-                pass
+    for cli_key, tf_key in int_keys.items():
+        value = as_int_or_enum(one_value(parsed, cli_key), ENABLE_MAP)
+        if value is not None:
+            attrs[tf_key] = value
 
-    name = f"real_server_{index}"
-    lines = [
-        f'resource "alteon_real_server" "{safe_name(name)}" {{',
-        f'  index = {hcl_value(index)}',
-        *hcl_block("elements", attrs, indent=2),
-        "}",
-    ]
-    return name, lines
+    return f"real_server_{index}", hcl_resource("alteon_real_server", f"real_server_{index}", attrs)
+
+
+
+GROUP_METRIC_MAP = {
+    "1": "roundrobin",
+    "roundrobin": "roundrobin",
+    "rr": "roundrobin",
+    "2": "leastconnections",
+    "leastconnections": "leastconnections",
+    "leastconns": "leastconnections",
+    "leastconn": "leastconnections",
+    "3": "minmisses",
+    "minmisses": "minmisses",
+    "minmiss": "minmisses",
+    "4": "hash",
+    "hash": "hash",
+    "5": "response",
+    "response": "response",
+    "6": "bandwidth",
+    "bandwidth": "bandwidth",
+    "7": "phash",
+    "phash": "phash",
+    "8": "svcleast",
+    "svcleast": "svcleast",
+    "9": "hrw",
+    "hrw": "hrw",
+}
+
+GROUP_HEALTH_LAYER_MAP = {
+    "1": "icmp",
+    "icmp": "icmp",
+    "ping": "icmp",
+    "2": "tcp",
+    "tcp": "tcp",
+    "3": "http",
+    "http": "http",
+    "44": "http",
+    "httphead": "http",
+    "4": "dns",
+    "dns": "dns",
+    "5": "smtp",
+    "smtp": "smtp",
+    "28": "link",
+    "link": "link",
+    "31": "ldap",
+    "ldap": "ldap",
+}
 
 
 def normalize_group_metric(value: str | None) -> str | None:
-    """Mappt Alteon-CLI-/Import-Metric-Werte auf das neue Provider-Modell."""
     value = clean_quote(value)
     if not value:
         return None
-    v = value.lower().replace("-", "").replace("_", "")
-    mapping = {
-        "1": "roundrobin",
-        "roundrobin": "roundrobin",
-        "rr": "roundrobin",
-        "2": "leastconnections",
-        "leastconnections": "leastconnections",
-        "leastconns": "leastconnections",
-        "leastconn": "leastconnections",
-        "3": "minmisses",
-        "minmisses": "minmisses",
-        "minmiss": "minmisses",
-        "4": "hash",
-        "hash": "hash",
-        "5": "response",
-        "response": "response",
-        "6": "bandwidth",
-        "bandwidth": "bandwidth",
-        "7": "phash",
-        "phash": "phash",
-        "8": "svcleast",
-        "svcleast": "svcleast",
-        "9": "hrw",
-        "hrw": "hrw",
-    }
-    return mapping.get(v)
+    normalized = value.lower().replace("-", "").replace("_", "")
+    return GROUP_METRIC_MAP.get(normalized)
 
 
 def normalize_group_health_layer(value: str | None) -> str | None:
-    """Mappt Alteon-CLI-/Import-Health-Layer auf das neue Provider-Modell."""
     value = clean_quote(value)
     if not value:
         return None
-    v = value.lower().replace("-", "").replace("_", "")
-    mapping = {
-        "1": "icmp",
-        "icmp": "icmp",
-        "ping": "icmp",
-        "2": "tcp",
-        "tcp": "tcp",
-        "3": "http",
-        "http": "http",
-        "44": "http",
-        "httphead": "http",
-        "4": "dns",
-        "dns": "dns",
-        "5": "smtp",
-        "smtp": "smtp",
-        "28": "link",
-        "link": "link",
-        "31": "ldap",
-        "ldap": "ldap",
-    }
-    return mapping.get(v)
+    normalized = value.lower().replace("-", "").replace("_", "")
+    return GROUP_HEALTH_LAYER_MAP.get(normalized)
 
 
 def block_to_server_group(block: Block) -> tuple[str, list[str]] | None:
-    """
-    Neues deklaratives Provider-Modell für alteon_server_group.
-
-    Alt:
-      Eine Resource für die Gruppe plus zusätzliche addserver-Resources.
-
-    Neu:
-      Genau eine Resource pro Gruppe. Mitglieder stehen vollständig in
-      servers = ["..."] und Einstellungen liegen flach direkt in der Resource.
-    """
-    m = re.fullmatch(r"/c/slb/group\s+(\S+)", block.path)
-    if not m:
+    index = path_id(r"/c/slb/group\s+(\S+)", block.path)
+    if not index:
         return None
 
-    index = m.group(1)
     parsed = parse_commands(block.commands)
+    attrs: dict[str, Any] = {"index": index}
 
-    servers = [clean_quote(v) for v in parsed.get("add", [])]
-    servers = [v for v in servers if v]
-
-    attrs: dict[str, Any] = {
-        "index": index,
-    }
-
+    servers = [clean_quote(server) for server in parsed.get("add", [])]
+    servers = [server for server in servers if server]
     if servers:
         attrs["servers"] = servers
 
@@ -568,271 +642,479 @@ def block_to_server_group(block: Block) -> tuple[str, list[str]] | None:
     if metric:
         attrs["metric"] = metric
 
-    # Unterschiedliche Alteon-Dumps nutzen unterschiedliche Schreibweisen.
-    health_layer = (
-        normalize_group_health_layer(one_value(parsed, "healthchecklayer"))
+    health_check_layer = (
+        normalize_group_health_layer(one_value(parsed, "health"))
+        or normalize_group_health_layer(one_value(parsed, "healthchecklayer"))
         or normalize_group_health_layer(one_value(parsed, "health_check_layer"))
-        or normalize_group_health_layer(one_value(parsed, "health"))
         or normalize_group_health_layer(one_value(parsed, "healthck"))
         or normalize_group_health_layer(one_value(parsed, "hc"))
     )
-    if health_layer:
-        attrs["health_check_layer"] = health_layer
+    if health_check_layer:
+        attrs["health_check_layer"] = health_check_layer
 
-    health_id = clean_quote(one_value(parsed, "healthid")) or clean_quote(one_value(parsed, "health_id")) or clean_quote(one_value(parsed, "hcid"))
+    health_id = (
+        clean_quote(one_value(parsed, "healthid"))
+        or clean_quote(one_value(parsed, "health_id"))
+        or clean_quote(one_value(parsed, "hcid"))
+    )
     if health_id:
         attrs["health_id"] = health_id
 
-    backup_server = clean_quote(one_value(parsed, "backupserver"))
+    backup_server = (
+        clean_quote(one_value(parsed, "backupserver"))
+        or clean_quote(one_value(parsed, "backup_server"))
+    )
     if backup_server:
         attrs["backup_server"] = backup_server
 
-    backup_group = clean_quote(one_value(parsed, "backupgroup"))
+    backup_group = (
+        clean_quote(one_value(parsed, "backupgroup"))
+        or clean_quote(one_value(parsed, "backup_group"))
+    )
     if backup_group:
         attrs["backup_group"] = backup_group
 
-    real_threshold = one_value(parsed, "realthreshold") or one_value(parsed, "real_threshold")
-    if real_threshold and re.fullmatch(r"-?\d+", real_threshold):
-        attrs["real_threshold"] = int(real_threshold)
-
-    slowstart = one_value(parsed, "slowstart")
-    if slowstart and re.fullmatch(r"-?\d+", slowstart):
-        attrs["slowstart"] = int(slowstart)
-
-    ip_ver = group_ipver_to_number(one_value(parsed, "ipver"))
-    if ip_ver is not None:
-        attrs["ip_ver"] = ip_ver
-
-    # Kompatibilität mit älteren CLI-Dumps: "backup" kann je nach Alteon-Kontext
-    # Server oder Gruppe sein. Nur übernehmen, wenn die neue spezifische Variante
-    # nicht bereits gesetzt wurde. Ohne eindeutige Info wird es als backup_server
-    # interpretiert, weil das dem klassischen Real-Server-Fallback entspricht.
+    # Legacy/ambiguous "backup" is treated as backup_server only when no explicit
+    # backup_server/backup_group was present.
     backup = clean_quote(one_value(parsed, "backup"))
     if backup and "backup_server" not in attrs and "backup_group" not in attrs:
         attrs["backup_server"] = backup
 
-    res_name = safe_name(f"server_group_{index}")
-    lines = [f'resource "alteon_server_group" "{res_name}" {{']
-    for key, value in attrs.items():
-        lines.append(f"  {key} = {hcl_value(value)}")
-    lines.append("}")
+    for cli_key, tf_key in {
+        "realthreshold": "real_threshold",
+        "real_threshold": "real_threshold",
+        "slowstart": "slowstart",
+    }.items():
+        value = as_int_or_enum(one_value(parsed, cli_key))
+        if value is not None:
+            attrs[tf_key] = value
 
-    return f"server_group_{index}", lines
+    ip_ver = ipver_to_number(one_value(parsed, "ipver") or one_value(parsed, "ip_ver"))
+    if ip_ver is not None:
+        attrs["ip_ver"] = ip_ver
+
+    res_name = f"server_group_{index}"
+    return res_name, hcl_resource("alteon_server_group", res_name, attrs)
+
+
 
 def block_to_virtual_server(block: Block) -> tuple[str, list[str]] | None:
-    m = re.fullmatch(r"/c/slb/virt\s+(\S+)", block.path)
-    if not m:
+    index = path_id(r"/c/slb/virt\s+(\S+)", block.path)
+    if not index:
         return None
 
-    index = m.group(1)
     parsed = parse_commands(block.commands)
-
-    vip = one_value(parsed, "vip")
+    vip = clean_quote(one_value(parsed, "vip") or one_value(parsed, "virt_server_ip_address"))
     if not vip:
         return None
 
     attrs: dict[str, Any] = {
-        "virtserveripaddress": vip,
-        "virtserveripver": ipver_to_number(one_value(parsed, "ipver")),
-        "virtservervname": clean_quote(one_value(parsed, "name")),
+        "index": index,
+        "virt_server_ip_address": vip,
+        "virt_server_ip_ver": ipver_to_number(one_value(parsed, "ipver")),
+        "virt_server_vname": clean_quote(one_value(parsed, "name")),
     }
 
     if "ena" in parsed:
-        attrs["virtserverstate"] = 2
+        attrs["virt_server_state"] = 2
     elif "dis" in parsed:
-        attrs["virtserverstate"] = 3
+        attrs["virt_server_state"] = 3
 
-    # Mapping gemäß alteon_virtual_server Schema.
-    # Nur direkt erkennbare Alteon-CLI-Keys werden gesetzt.
-    direct_string_keys = {
-        "dname": "virtserverdname",
-        "domain": "virtserverdname",
-        "ipv6": "virtserveripv6addr",
-        "ipv6addr": "virtserveripv6addr",
-        "srcnetwork": "virtserversrcnetwork",
-        "nat": "virtservernat",
-        "nat6": "virtservernat6",
-        "wanlink": "virtserverwanlink",
-        "rule": "virtserverrule",
+    string_keys = {
+        "dname": "virt_server_dname",
+        "domain": "virt_server_dname",
+        "ipv6": "virt_server_ipv6_addr",
+        "ipv6addr": "virt_server_ipv6_addr",
+        "srcnetwork": "virt_server_src_network",
+        "nat": "virt_server_nat",
+        "nat6": "virt_server_nat6",
+        "wanlink": "virt_server_wanlink",
+        "segment": "virt_server_segment",
     }
-    direct_int_keys = {
-        "l3only": "virtserverlayer3only",
-        "layer3only": "virtserverlayer3only",
-        "bwmcontract": "virtserverbwmcontract",
-        "weight": "virtserverweight",
-        "avail": "virtserveravail",
-        "addrule": "virtserveraddrule",
-        "removerule": "virtserverremoverule",
-        "freeserviceidx": "virtserverfreeserviceidx",
-        "creset": "virtservercreset",
-        "isdnssecvip": "virtserverisdnssecvip",
-        "availpersist": "virtserveravailpersist",
-        "rtsrcmac": "virtserverrtsrcmac",
-        "creationtype": "virtservercreationtype",
+    int_keys = {
+        "l3only": "virt_server_layer3_only",
+        "layer3only": "virt_server_layer3_only",
+        "bwmcontract": "virt_server_bwm_contract",
+        "weight": "virt_server_weight",
+        "avail": "virt_server_avail",
+        "freeserviceidx": "virt_server_free_service_idx",
+        "creset": "virt_server_c_reset",
+        "isdnssecvip": "virt_server_is_dns_sec_vip",
+        "availpersist": "virt_server_avail_persist",
+        "rtsrcmac": "virt_server_rt_src_mac",
+        "creationtype": "virt_server_creation_type",
+        "dad": "virt_serverdad",
     }
 
-    for cli_key, tf_key in direct_string_keys.items():
+    for cli_key, tf_key in string_keys.items():
         value = clean_quote(one_value(parsed, cli_key))
         if value:
             attrs[tf_key] = value
 
-    for cli_key, tf_key in direct_int_keys.items():
-        value = one_value(parsed, cli_key)
-        if value and re.fullmatch(r"-?\d+", value):
-            attrs[tf_key] = int(value)
-        elif value:
-            try:
-                attrs[tf_key] = enum_enable(value)
-            except ValueError:
-                pass
+    for cli_key, tf_key in int_keys.items():
+        value = as_int_or_enum(one_value(parsed, cli_key), ENABLE_MAP)
+        if value is not None:
+            attrs[tf_key] = value
 
-    name = f"virtual_server_{index}"
-    lines = [
-        f'resource "alteon_virtual_server" "{safe_name(name)}" {{',
-        f'  index = {hcl_value(index)}',
-        *hcl_block("elements", attrs, indent=2),
-        "}",
-    ]
-    return name, lines
-
-
-def parse_service_header(path: str) -> tuple[str, int, str | None, bool] | None:
-    # /c/slb/virt 1000/service 443 https[/ssl]
-    # Protokoll darf nicht über den /ssl-Unterpfad hinaus greedy matchen.
-    m = re.fullmatch(r"/c/slb/virt\s+(\S+)/service\s+(\d+)(?:\s+([^/]+))?(?:/ssl)?", path)
-    if not m:
-        return None
-    virt_id = m.group(1)
-    port = int(m.group(2))
-    protocol = m.group(3).strip() if m.group(3) else None
-    is_ssl = path.endswith("/ssl")
-    return virt_id, port, protocol, is_ssl
-
-
-def service_key(block: Block) -> tuple[str, int, str | None] | None:
-    parsed = parse_service_header(block.path)
-    if not parsed:
-        return None
-    virt_id, port, protocol, _ = parsed
-    return virt_id, port, protocol
+    return f"virtual_server_{index}", hcl_resource("alteon_virtual_server", f"virtual_server_{index}", attrs)
 
 
 def merge_service_blocks(blocks: list[Block]) -> dict[tuple[str, int, str | None], dict[str, Any]]:
     services: dict[tuple[str, int, str | None], dict[str, Any]] = {}
-
     for block in blocks:
         parsed_header = parse_service_header(block.path)
         if not parsed_header:
             continue
 
-        virt_id, port, protocol, is_ssl = parsed_header
-        key = (virt_id, port, protocol)
+        virt_id, port, proto, suffix = parsed_header
+        key = (virt_id, port, proto)
         data = services.setdefault(
             key,
             {
                 "virt_id": virt_id,
                 "port": port,
-                "protocol": protocol,
-                "commands": [],
-                "ssl_commands": [],
+                "protocol": proto,
+                "base": [],
+                "ssl": [],
+                "http": [],
+                "other": [],
+                "paths": [],
             },
         )
-
-        if is_ssl:
-            data["ssl_commands"].extend(block.commands)
+        data["paths"].append(block.path)
+        if suffix == "ssl":
+            data["ssl"].extend(block.commands)
+        elif suffix == "http":
+            data["http"].extend(block.commands)
+        elif suffix:
+            data["other"].extend(block.commands)
+            # Encode some useful path-only subcommands like /pbind ... as raw context.
+            data["other"].append(f"__path_suffix__ {suffix}")
         else:
-            data["commands"].extend(block.commands)
-
+            data["base"].extend(block.commands)
     return services
+
+
+def map_service_action(value: str | None) -> int | None:
+    value = clean_quote(value)
+    if not value:
+        return None
+    mapping = {
+        "group": 1,
+        "redirect": 2,
+        "discard": 3,
+    }
+    return mapping.get(value.lower())
+
+
+def map_dbind(value: str | None) -> int | None:
+    value = clean_quote(value)
+    if not value:
+        return None
+    # Conservative mapping. Unknown values are skipped instead of producing
+    # invalid integers for the flat provider.
+    mapping = {
+        "disable": 1,
+        "disabled": 1,
+        "off": 1,
+        "forceproxy": 2,
+        "force-proxy": 2,
+        "enable": 2,
+        "enabled": 2,
+        "on": 2,
+    }
+    return mapping.get(value.lower())
 
 
 def service_to_hcl(data: dict[str, Any]) -> tuple[str, list[str]]:
     virt_id = data["virt_id"]
     port = data["port"]
-    protocol = data["protocol"]
-    parsed = parse_commands(data["commands"])
-    parsed_ssl = parse_commands(data["ssl_commands"])
+    proto = data["protocol"]
 
-    elements: dict[str, Any] = {
-        "virtport": int(port),
+    parsed = parse_commands(data["base"])
+    parsed_ssl = parse_commands(data["ssl"])
+    parsed_http = parse_commands(data["http"])
+
+    attrs: dict[str, Any] = {
+        "servindex": virt_id,
+        "index": int(port),
+        "virt_port": int(port),
     }
 
-    rport = one_value(parsed, "rport")
-    if rport and rport.isdigit():
-        elements["realport"] = int(rport)
+    rport = as_int_or_enum(one_value(parsed, "rport"))
+    if rport is not None:
+        attrs["real_port"] = rport
 
-    # realgroup liegt laut Provider-Schema in elements_7.
-    elements_7: dict[str, Any] = {}
-    group = one_value(parsed, "group")
+    group = clean_quote(one_value(parsed, "group"))
     if group:
-        elements_7["realgroup"] = group
+        attrs["real_group"] = group
 
-    elements_2: dict[str, Any] = {}
-    srvrcert = one_value(parsed_ssl, "srvrcert")
-    # Alteon CLI: srvrcert cert 1001 -> Provider: servcert = 1001
+    timeout = as_int_or_enum(one_value(parsed, "tmout") or one_value(parsed, "timeout"))
+    if timeout is not None:
+        attrs["time_out"] = timeout
+
+    dbind = map_dbind(one_value(parsed, "dbind"))
+    if dbind is not None:
+        attrs["d_bind"] = dbind
+
+    action = map_service_action(one_value(parsed, "action"))
+    if action is not None:
+        attrs["action"] = action
+
+    redirect = clean_quote(one_value(parsed, "redirect"))
+    if redirect:
+        attrs["redirect"] = redirect
+
+    name = clean_quote(one_value(parsed, "name"))
+    if name:
+        attrs["name"] = name
+
+    # HTTP sub-context.
+    xff = enum_enable(one_value(parsed_http, "xforward"))
+    if xff is not None:
+        attrs["x_forwarded_for"] = xff
+
+    # SSL sub-context.
+    sslpol = clean_quote(one_value(parsed_ssl, "sslpol"))
+    if sslpol:
+        attrs["ss_lpol"] = sslpol
+
+    srvrcert = clean_quote(one_value(parsed_ssl, "srvrcert"))
     if srvrcert:
-        parts = srvrcert.split()
-        elements_2["servcert"] = parts[-1] if parts else srvrcert
-        if len(parts) >= 2 and parts[0] == "group":
-            elements_5 = {"servcertgrpmark": 1}
+        parts = split_cmd(srvrcert)
+        if len(parts) >= 2 and parts[0].lower() == "group":
+            attrs["serv_cert"] = parts[-1]
+            attrs["serv_cert_grp_mark"] = 1
+        elif len(parts) >= 2 and parts[0].lower() == "cert":
+            attrs["serv_cert"] = parts[-1]
+            attrs["serv_cert_grp_mark"] = 0
         else:
-            elements_5 = {"servcertgrpmark": 0}
-    else:
-        elements_5 = {}
+            attrs["serv_cert"] = srvrcert
 
-    res_name = f"virtual_service_{virt_id}_{port}_{protocol or 'ip'}"
-    lines = [
-        f'resource "alteon_virtual_service" "{safe_name(res_name)}" {{',
-        f"  index     = {int(port)}",
-        f'  servindex = {hcl_value(virt_id)}',
-        *hcl_block("elements", elements, indent=2),
-    ]
+    res_name = f"virtual_service_{virt_id}_{port}_{proto or 'ip'}"
+    return res_name, hcl_resource("alteon_virtual_service", res_name, attrs)
 
-    if elements_2:
-        lines.extend(hcl_block("elements_2", elements_2, indent=2))
-    if elements_5:
-        lines.extend(hcl_block("elements_5", elements_5, indent=2))
-    if elements_7:
-        lines.extend(hcl_block("elements_7", elements_7, indent=2))
 
-    lines.append("}")
-    return res_name, lines
+def merge_ssl_policy_blocks(blocks: list[Block]) -> dict[str, dict[str, list[str]]]:
+    policies: dict[str, dict[str, list[str]]] = {}
+    for block in blocks:
+        m = re.fullmatch(r"/c/slb/ssl/sslpol\s+([^/\s]+)(?:/(.+))?", block.path)
+        if not m:
+            continue
+        name = m.group(1)
+        suffix = m.group(2) or "main"
+        policies.setdefault(name, {}).setdefault(suffix, []).extend(block.commands)
+    return policies
+
+
+def parse_cipher_command(value: str | None) -> tuple[str | None, str | None]:
+    value = clean_quote(value)
+    if not value:
+        return None, None
+    parts = split_cmd(value)
+    if len(parts) >= 2 and parts[0].lower() in {"user-defined", "userdefined"}:
+        return "user-defined", parts[1]
+    return parts[0] if parts else value, None
+
+
+def ssl_policy_to_hcl(name: str, sections: dict[str, list[str]]) -> tuple[str, list[str]]:
+    main = parse_commands(sections.get("main", []))
+    backend = parse_commands(sections.get("backend", []))
+    passinfo = parse_commands(sections.get("passinfo", []))
+    frver = parse_commands(sections.get("frver", []))
+    bever = parse_commands(sections.get("backend/ver", []))
+
+    attrs: dict[str, Any] = {"nameidindex": name}
+
+    display_name = clean_quote(one_value(main, "name"))
+    if display_name:
+        attrs["name"] = display_name
+
+    if "ena" in main:
+        attrs["admin_status"] = 2
+    elif "dis" in main:
+        attrs["admin_status"] = 3
+
+    convert = enum_enable(one_value(main, "convert"))
+    if convert is not None:
+        attrs["convert"] = convert
+
+    fessl = enum_enable(one_value(main, "fessl"))
+    if fessl is not None:
+        attrs["fessl"] = fessl
+
+    cipher_raw = one_value(main, "cipher")
+    cipher_name, cipher_userdef = parse_cipher_command(cipher_raw)
+    if cipher_userdef:
+        attrs["cipher_userdef"] = cipher_userdef
+    elif cipher_name and cipher_name.isdigit():
+        attrs["cipher_name"] = int(cipher_name)
+
+    intermca = clean_quote(one_value(main, "intermca"))
+    if intermca:
+        parts = split_cmd(intermca)
+        if len(parts) >= 2:
+            attrs["intermca_chain_type"] = parts[0]
+            attrs["intermca_chain_name"] = parts[1]
+
+    secreneg = clean_quote(one_value(main, "secreneg"))
+    if secreneg:
+        attrs["secreneg"] = secreneg
+
+    be_ssl = enum_enable(one_value(backend, "ssl"))
+    if be_ssl is not None:
+        attrs["bessl"] = be_ssl
+
+    be_cipher_raw = one_value(backend, "cipher")
+    be_cipher_name, be_cipher_userdef = parse_cipher_command(be_cipher_raw)
+    if be_cipher_userdef:
+        attrs["be_cipher_userdef"] = be_cipher_userdef
+    elif be_cipher_name and be_cipher_name.isdigit():
+        attrs["becipher"] = int(be_cipher_name)
+
+    pass_frontend = enum_enable(one_value(passinfo, "frontend"))
+    if pass_frontend is not None:
+        attrs["pass_info_frontend"] = pass_frontend
+
+    # TLS version subcontexts.
+    for key, tf_key in {
+        "tls10": "fe_tls10_version",
+        "tls11": "fe_tls11_version",
+        "tls12": "fe_tls12_version",
+        "tls13": "fe_tls13_version",
+        "sslv3": "fe_sslv3_version",
+    }.items():
+        value = enum_enable(one_value(frver, key))
+        if value is not None:
+            attrs[tf_key] = value
+
+    for key, tf_key in {
+        "tls10": "be_tls10_version",
+        "tls11": "be_tls11_version",
+        "tls12": "be_tls12_version",
+        "tls13": "be_tls13_version",
+        "sslv3": "be_sslv3_version",
+    }.items():
+        value = enum_enable(one_value(bever, key))
+        if value is not None:
+            attrs[tf_key] = value
+
+    res_name = f"ssl_policy_{name}"
+    return res_name, hcl_resource("alteon_ssl_policy", res_name, attrs)
+
+
+def merge_http2_policy_blocks(blocks: list[Block]) -> dict[str, list[str]]:
+    policies: dict[str, list[str]] = {}
+    for block in blocks:
+        m = re.fullmatch(r"/c/slb/(?:accel/)?http2/(?:pol|policy)\s+(\S+)(?:/.+)?", block.path)
+        if not m:
+            m = re.fullmatch(r"/c/slb/http2pol\s+(\S+)(?:/.+)?", block.path)
+        if not m:
+            continue
+        policies.setdefault(m.group(1), []).extend(block.commands)
+    return policies
+
+
+def http2_policy_to_hcl(name: str, commands: list[str]) -> tuple[str, list[str]]:
+    parsed = parse_commands(commands)
+    attrs: dict[str, Any] = {"nameidindex": name}
+    string_keys = {"name": "name", "header": "header", "hpack": "hpack_size", "backendhpack": "backend_hpack_size"}
+    int_keys = {
+        "ena": "admin_status",
+        "admin": "admin_status",
+        "streams": "streams",
+        "idle": "idle",
+        "enainsert": "ena_insert",
+        "serverpush": "ena_server_push",
+        "backend": "backend_status",
+        "backendstreams": "backend_streams",
+    }
+    if "ena" in parsed:
+        attrs["admin_status"] = 2
+    elif "dis" in parsed:
+        attrs["admin_status"] = 3
+    for cli_key, tf_key in string_keys.items():
+        value = clean_quote(one_value(parsed, cli_key))
+        if value:
+            attrs[tf_key] = value
+    for cli_key, tf_key in int_keys.items():
+        if cli_key in {"ena"}:
+            continue
+        value = as_int_or_enum(one_value(parsed, cli_key), ENABLE_MAP)
+        if value is not None:
+            attrs[tf_key] = value
+    res_name = f"http2_policy_{name}"
+    return res_name, hcl_resource("alteon_http2_policy", res_name, attrs)
 
 
 def cli_command_to_hcl(block: Block, used: set[str]) -> list[str]:
-    name = unique_name(block.path.replace("/c/slb/", "cli_"), used)
-    return [
-        f'resource "alteon_cli_command" "{name}" {{',
-        "  elements {",
-        f"    agalteonclicommand = {hcl_value(cli_line(block))}",
-        "  }",
-        "}",
-    ]
+    name = unique_name(block.path.replace("/c/", "cli_"), used)
+    return hcl_resource("alteon_cli_command", name, {"agalteonclicommand": cli_line(block)})
 
 
 def blocks_to_terraform(blocks: Iterable[Block], native: bool = True) -> str:
     blocks = list(blocks)
     out: list[str] = [
-        'terraform {',
-        '  required_providers {',
-        '    alteon = {',
+        "terraform {",
+        "  required_providers {",
+        "    alteon = {",
         '      source = "Radware/alteon"',
-        '    }',
-        '  }',
-        '}',
-        '',
+        "    }",
+        "  }",
+        "}",
+        "",
     ]
 
     used_cli_names: set[str] = set()
-    native_resource_names: set[str] = set()
 
     service_data = merge_service_blocks(blocks)
-    service_keys = set(service_data.keys())
+    ssl_policy_data = merge_ssl_policy_blocks(blocks)
+    http2_policy_data = merge_http2_policy_blocks(blocks)
 
+    # Pre-render services grouped by virtual server ID.
+    services_by_virt: dict[str, list[tuple[tuple[str, int, str | None], list[str]]]] = {}
+    if native:
+        for key, data in sorted(
+            service_data.items(),
+            key=lambda item: (item[1]["virt_id"], item[1]["port"], item[1]["protocol"] or ""),
+        ):
+            _, lines = service_to_hcl(data)
+            services_by_virt.setdefault(data["virt_id"], []).append((key, lines))
+
+    emitted_service_keys: set[tuple[str, int, str | None]] = set()
+    emitted_ssl_policies = False
+    emitted_http2_policies = False
+
+    # 1) Policy resources first.
+    if native:
+        for name in sorted(ssl_policy_data):
+            _, lines = ssl_policy_to_hcl(name, ssl_policy_data[name])
+            out.extend(lines)
+            out.append("")
+        emitted_ssl_policies = True
+
+        for name in sorted(http2_policy_data):
+            _, lines = http2_policy_to_hcl(name, http2_policy_data[name])
+            out.extend(lines)
+            out.append("")
+        emitted_http2_policies = True
+
+    # 2) Non-virtual resources in source order.
     for block in blocks:
-        # SSL-Service-Blöcke werden mit dem Basis-Service zusammengeführt.
-        key = service_key(block)
-        if key in service_keys:
+        service_header = parse_service_header(block.path)
+        if service_header:
+            continue
+
+        if is_ssl_policy_path(block.path):
+            if native and emitted_ssl_policies:
+                continue
+        if is_http2_policy_path(block.path):
+            if native and emitted_http2_policies:
+                continue
+
+        # Virtual servers are handled in the next pass so services can be placed
+        # directly below their parent virtual server.
+        if is_virt_path(block.path):
             continue
 
         rendered: tuple[str, list[str]] | None = None
@@ -841,94 +1123,131 @@ def blocks_to_terraform(blocks: Iterable[Block], native: bool = True) -> str:
             rendered = block_to_real_server(block)
         elif native and is_group_path(block.path):
             rendered = block_to_server_group(block)
-        elif native and is_virt_path(block.path):
-            rendered = block_to_virtual_server(block)
 
         if rendered:
-            name, lines = rendered
-            # Absicherung gegen doppelte Namen, falls IDs Sonderzeichen enthalten.
-            unique_name(name, native_resource_names)
+            _, lines = rendered
             out.extend(lines)
             out.append("")
-        elif is_cli_supported_path(block.path) or (not native and is_group_path(block.path)):
+        elif is_cli_supported_path(block.path) or (
+            not native and (is_real_path(block.path) or is_group_path(block.path))
+        ):
             out.extend(cli_command_to_hcl(block, used_cli_names))
             out.append("")
 
+    # 3) Virtual servers directly followed by their services.
+    for block in blocks:
+        if not is_virt_path(block.path):
+            continue
+
+        if native:
+            rendered = block_to_virtual_server(block)
+            if rendered:
+                _, lines = rendered
+                out.extend(lines)
+                out.append("")
+        else:
+            out.extend(cli_command_to_hcl(block, used_cli_names))
+            out.append("")
+
+        virt_id = path_id(r"/c/slb/virt\s+(\S+)", block.path)
+        if not virt_id:
+            continue
+
+        if native:
+            for key, lines in services_by_virt.get(virt_id, []):
+                out.extend(lines)
+                out.append("")
+                emitted_service_keys.add(key)
+        else:
+            for service_block in blocks:
+                parsed = parse_service_header(service_block.path)
+                if parsed and parsed[0] == virt_id:
+                    out.extend(cli_command_to_hcl(service_block, used_cli_names))
+                    out.append("")
+
+    # 4) Safety net for service blocks whose virtual server block is missing.
     if native:
-        for _, data in sorted(service_data.items(), key=lambda item: (item[1]["virt_id"], item[1]["port"], item[1]["protocol"] or "")):
-            name, lines = service_to_hcl(data)
-            unique_name(name, native_resource_names)
+        for key, data in sorted(
+            service_data.items(),
+            key=lambda item: (item[1]["virt_id"], item[1]["port"], item[1]["protocol"] or ""),
+        ):
+            if key in emitted_service_keys:
+                continue
+            _, lines = service_to_hcl(data)
             out.extend(lines)
             out.append("")
     else:
+        # In CLI-only mode, emit service blocks without a corresponding virtual
+        # server block only once.
+        known_virt_ids = {
+            path_id(r"/c/slb/virt\s+(\S+)", b.path)
+            for b in blocks
+            if is_virt_path(b.path)
+        }
         for block in blocks:
-            if is_real_path(block.path) or is_group_path(block.path) or is_virt_path(block.path) or is_virt_service_path(block.path):
+            parsed = parse_service_header(block.path)
+            if parsed and parsed[0] not in known_virt_ids:
                 out.extend(cli_command_to_hcl(block, used_cli_names))
                 out.append("")
 
     return "\n".join(out).rstrip() + "\n"
 
+
 def collect_imports(blocks: Iterable[Block], native: bool = True) -> list[dict[str, str]]:
-    """
-    Erzeugt Terraform import-Blöcke für Native-Resources.
-
-    Aktuell werden bewusst nur die vom Benutzer gewünschten Basisobjekte
-    importiert:
-      - alteon_real_server
-      - alteon_server_group
-      - alteon_virtual_server
-
-    Nicht importiert werden:
-      - alteon_virtual_service, weil der Provider-Import-Key je nach Version
-        unterschiedlich sein kann.
-      - zusätzliche group addserver-Resources, da diese denselben Alteon-Index
-        verwenden und nur Änderungsoperationen für Mitgliedschaften darstellen.
-      - alteon_cli_command-Fallbacks.
-    """
     if not native:
         return []
 
     imports: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
 
-    for block in blocks:
-        resource_type: str | None = None
-        resource_name: str | None = None
-        import_id: str | None = None
+    def add(resource: str, import_id: str) -> None:
+        key = (resource, import_id)
+        if key not in seen:
+            imports.append({"resource": resource, "id": import_id})
+            seen.add(key)
 
+    service_data = merge_service_blocks(list(blocks))
+    blocks = list(blocks)
+
+    for block in blocks:
         if is_real_path(block.path):
-            m = re.fullmatch(r"/c/slb/real\s+(\S+)", block.path)
+            index = path_id(r"/c/slb/real\s+(\S+)", block.path)
             parsed = parse_commands(block.commands)
-            # Nur importieren, wenn auch eine Native-Resource erzeugt wird.
-            if m and one_value(parsed, "rip"):
-                import_id = m.group(1)
-                resource_type = "alteon_real_server"
-                resource_name = safe_name(f"real_server_{import_id}")
+            if index and (one_value(parsed, "rip") or one_value(parsed, "ipaddr")):
+                add(f"alteon_real_server.{safe_name(f'real_server_{index}')}", index)
 
         elif is_group_path(block.path):
-            m = re.fullmatch(r"/c/slb/group\s+(\S+)", block.path)
-            if m:
-                import_id = m.group(1)
-                resource_type = "alteon_server_group"
-                resource_name = safe_name(f"server_group_{import_id}")
+            index = path_id(r"/c/slb/group\s+(\S+)", block.path)
+            if index:
+                add(f"alteon_server_group.{safe_name(f'server_group_{index}')}", index)
 
         elif is_virt_path(block.path):
-            m = re.fullmatch(r"/c/slb/virt\s+(\S+)", block.path)
+            index = path_id(r"/c/slb/virt\s+(\S+)", block.path)
             parsed = parse_commands(block.commands)
-            # Nur importieren, wenn auch eine Native-Resource erzeugt wird.
-            if m and one_value(parsed, "vip"):
-                import_id = m.group(1)
-                resource_type = "alteon_virtual_server"
-                resource_name = safe_name(f"virtual_server_{import_id}")
+            if index and one_value(parsed, "vip"):
+                add(f"alteon_virtual_server.{safe_name(f'virtual_server_{index}')}", index)
 
-        if resource_type and resource_name and import_id:
-            key = (resource_type, resource_name)
-            if key not in seen:
-                imports.append({
-                    "resource": f"{resource_type}.{resource_name}",
-                    "id": import_id,
-                })
-                seen.add(key)
+        elif is_ssl_policy_path(block.path):
+            m = re.fullmatch(r"/c/slb/ssl/sslpol\s+([^/\s]+)(?:/.+)?", block.path)
+            if m:
+                name = m.group(1)
+                add(f"alteon_ssl_policy.{safe_name(f'ssl_policy_{name}')}", name)
+
+        elif is_http2_policy_path(block.path):
+            m = re.fullmatch(r"/c/slb/(?:accel/)?http2/(?:pol|policy)\s+(\S+)(?:/.+)?", block.path)
+            if not m:
+                m = re.fullmatch(r"/c/slb/http2pol\s+(\S+)(?:/.+)?", block.path)
+            if m:
+                name = m.group(1)
+                add(f"alteon_http2_policy.{safe_name(f'http2_policy_{name}')}", name)
+
+    # New flat virtual_service has two keys. The most common import ID format for
+    # such resources is "servindex/index"; keep it generated but easy to edit.
+    for _, data in sorted(service_data.items(), key=lambda item: (item[1]["virt_id"], item[1]["port"], item[1]["protocol"] or "")):
+        virt_id = data["virt_id"]
+        port = data["port"]
+        proto = data["protocol"] or "ip"
+        add(f"alteon_virtual_service.{safe_name(f'virtual_service_{virt_id}_{port}_{proto}')}", f"{virt_id}/{port}")
 
     return imports
 
@@ -949,30 +1268,21 @@ def imports_to_terraform(imports: Iterable[dict[str, str]]) -> str:
 def write_import_file(imports: Iterable[dict[str, str]], filename: str | Path) -> None:
     Path(filename).write_text(imports_to_terraform(imports), encoding="utf-8")
 
+
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Konvertiert Alteon-SLB-Konfigurationsdump in Terraform."
-    )
-
-    print(
-        f"Alteon Configuration Converter "
-        f"v{__version__} "
-        f"(c) 2026 Michael Schwenke"
-    )
-
+    parser = argparse.ArgumentParser(description="Konvertiert Alteon-SLB-Konfigurationsdump in Terraform.")
     parser.add_argument("input", type=Path, help="Alteon-Konfigurationsdump")
     parser.add_argument("-o", "--output", type=Path, default=Path("main.tf"), help="Zieldatei, Default: main.tf")
     parser.add_argument("-i", "--import-file", help="Generate Terraform import blocks")
-    parser.add_argument(
-        "--cli-only",
-        action="store_true",
-        help="Auch Real/Virt/Service als alteon_cli_command ausgeben statt Native-Resources.",
-    )
+    parser.add_argument("--cli-only", action="store_true", help="Auch Flat-Resources als alteon_cli_command ausgeben.")
     args = parser.parse_args()
+
+    print(f"Alteon Configuration Converter v{__version__} (c) 2026 Michael Schwenke")
 
     text = args.input.read_text(encoding="utf-8", errors="replace")
     blocks = parse_alteon_config(text)
     native = not args.cli_only
+
     hcl = blocks_to_terraform(blocks, native=native)
     args.output.write_text(hcl, encoding="utf-8")
 
@@ -986,14 +1296,16 @@ def main() -> int:
         or is_group_path(b.path)
         or is_virt_path(b.path)
         or is_virt_service_path(b.path)
+        or is_ssl_policy_path(b.path)
+        or is_http2_policy_path(b.path)
         or is_cli_supported_path(b.path)
     ]
 
-    print("alteon_to_terraform_native_v3_6")
+    print("alteon_to_terraform_flat_v4_3")
     print(f"OK: {len(relevant)} relevante Alteon-Blöcke nach {args.output} geschrieben.")
     if args.import_file:
         print(f"OK: {len(generated_imports)} Import-Blöcke nach {args.import_file} geschrieben.")
-    print("Modus:", "Native Resources" if not args.cli_only else "CLI only")
+    print("Modus:", "Flat Native Resources" if native else "CLI only")
     return 0
 
 
