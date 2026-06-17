@@ -1,0 +1,445 @@
+/c/l3/vrrp/vr 123
+	dis
+	ipver v4
+	vrid 123
+	if 4
+	prio 22
+	addr 1.2.3.50
+	preem dis
+	share dis
+/c/l3/vrrp/vr 123/track
+	ifs e
+/c/l3/vrrp/vr 124
+	ena
+	ipver v4
+	vrid 124
+	if 4
+	prio 101
+	addr 1.2.3.51
+	preem dis
+	share dis
+/c/l3/vrrp/vr 124/track
+	ifs e
+/c/l3/vrrp/vr 138
+	dis
+	ipver v4
+	vrid 138
+	if 4
+	prio 101
+	addr 1.2.3.30
+	share dis
+/c/l3/vrrp/vr 138/track
+	ifs e
+/c/l3/vrrp/vr 141
+	ena
+	ipver v4
+	vrid 141
+	if 4
+	prio 222
+	addr 1.2.3.38
+	preem dis
+	share dis
+/c/l3/vrrp/vr 141/track
+	ifs e
+/c/l3/vrrp/vr 142
+	ena
+	ipver v4
+	vrid 142
+	if 4
+	prio 222
+	addr 1.2.3.39
+	preem dis
+	share dis
+/c/l3/vrrp/vr 142/track
+	ifs e
+/c/slb/accel/compress
+	on
+/c/slb/ssl/certs/key 13
+/c/slb/ssl/certs/import key "13" text
+-----BEGIN RSA PRIVATE KEY-----
+-----END RSA PRIVATE KEY-----
+
+/c/slb/ssl/certs/key 14
+/c/slb/ssl/certs/import key "14" text
+-----BEGIN RSA PRIVATE KEY-----
+-----END RSA PRIVATE KEY-----
+
+/c/slb/ssl/certs/key web.intern.example.de
+/c/slb/ssl/certs/import key "web.intern.example.de" text
+-----BEGIN RSA PRIVATE KEY-----
+-----END RSA PRIVATE KEY-----
+
+/c/slb/ssl/certs/key WebManagementCert
+/c/slb/ssl/certs/import key "WebManagementCert" text
+-----BEGIN RSA PRIVATE KEY-----
+-----END RSA PRIVATE KEY-----
+
+/c/slb/ssl/certs/request WebManagementCert
+/c/slb/ssl/certs/import request "WebManagementCert" text
+-----BEGIN CERTIFICATE REQUEST-----
+-----END CERTIFICATE REQUEST-----
+
+/c/slb/ssl/certs/cert 13
+/c/slb/ssl/certs/import cert "13" text
+-----BEGIN CERTIFICATE-----
+-----END CERTIFICATE-----
+
+/c/slb/ssl/certs/cert 14
+/c/slb/ssl/certs/import cert "14" text
+-----BEGIN CERTIFICATE-----
+-----END CERTIFICATE-----
+
+/c/slb/ssl/certs/cert web.intern.example.de
+/c/slb/ssl/certs/import cert "web.intern.example.de" text
+-----BEGIN CERTIFICATE-----
+-----END CERTIFICATE-----
+
+/c/slb/ssl/certs/cert WebManagementCert
+/c/slb/ssl/certs/import cert "WebManagementCert" text
+-----BEGIN CERTIFICATE-----
+-----END CERTIFICATE-----
+
+/c/slb/ssl/certs/intermca 3
+/c/slb/ssl/certs/import intermca "3" text
+-----BEGIN CERTIFICATE-----
+-----END CERTIFICATE-----
+
+/c/slb/ssl/certs/intermca 4
+/c/slb/ssl/certs/import intermca "4" text
+-----BEGIN CERTIFICATE-----
+-----END CERTIFICATE-----
+
+/c/slb/ssl/certs/intermca 13
+/c/slb/ssl/certs/import intermca "13" text
+-----BEGIN CERTIFICATE-----
+-----END CERTIFICATE-----
+
+/c/slb/ssl/certs/intermca 14
+/c/slb/ssl/certs/import intermca "14" text
+-----BEGIN CERTIFICATE-----
+-----END CERTIFICATE-----
+
+/c/slb/ssl/certs/group 1
+	type intermca
+	add "4"
+	add "3"
+/c/slb/ssl/certs/group 11
+	type intermca
+	add "14"
+	add "13"
+/c/slb/ssl/certs/group ergebniswweb
+	type certificate
+	add "web.intern.example.de"
+/c/slb/sync/passphrs testpass
+/c/slb/ssl
+	on
+/c/slb/ssl/sslpol Outbound_FE_SSL_Inspection
+	name "Outbound Frontend SSL Inspection"
+	convert disabled
+	ena
+/c/slb/ssl/sslpol Outbound_BE_SSL_Inspection
+	name "Outbound Backend SSL Inspection"
+	convert disabled
+	fessl disabled
+	ena
+/c/slb/ssl/sslpol Outbound_BE_SSL_Inspection/backend
+	ssl enabled
+/c/slb/ssl/sslpol comca44
+	cipher user-defined "ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES128-GCM-SHA256"
+	intermca group "11"
+	secreneg 0
+	convert disabled
+	ena
+/c/slb/ssl/sslpol comca44/backend
+	ssl enabled
+	cipher "high"
+/c/slb/ssl/sslpol comca44/passinfo
+	frontend enabled
+/c/slb/ssl/adv
+/c/slb/ssl/adv/bereuse
+	dis
+/c/slb/accel/caching
+	on
+/c/slb/advhc/health ergebnisw_50001 HTTP
+	dport 50001
+	ssl enabled
+/c/slb/advhc/health ergebnisw_50001 HTTP/http
+	path "/ergebnisw"
+	response 200,301,302,307 none ""
+/c/slb
+	on
+/c/slb/adv
+	direct ena
+	iptos dis
+	vstat dis
+	tso dis
+	sesscap 50
+	submac "dis"
+	cfgaplupd ena
+/c/slb/sync
+	prios d
+	certs e
+	auth "testpass"
+/c/slb/sync/peer 1
+	ena
+	addr 1.2.3.52
+/c/slb/real 15
+	ena
+	ipver v4
+	rip 1.2.3.31
+	name "testappp01_443"
+/c/slb/real 16
+	ena
+	ipver v4
+	rip 1.2.3.32
+	name "testappp02_443"
+/c/slb/real 41
+	ena
+	ipver v4
+	rip 1.2.3.31
+	name "testappp01_50001"
+	addport 50001
+/c/slb/real 42
+	ena
+	ipver v4
+	rip 1.2.3.32
+	name "testappp02_50001"
+	addport 50001
+/c/slb/real 43
+	ena
+	ipver v4
+	rip 1.2.3.33
+	name "testappp03_50001"
+	addport 50001
+/c/slb/real 44
+	ena
+	ipver v4
+	rip 1.2.3.34
+	name "testappp04_50001"
+	addport 50001
+/c/slb/real 102
+	ena
+	ipver v4
+	rip 1.2.3.11
+	name "testapp201_443"
+/c/slb/real 103
+	ena
+	ipver v4
+	rip 1.2.3.12
+	name "testapp202_443"
+/c/slb/real 141
+	ena
+	ipver v4
+	rip 1.2.3.31
+	name "testappp01_51001"
+	addport 51001
+/c/slb/real 142
+	ena
+	ipver v4
+	rip 1.2.3.32
+	name "testappp02_51001"
+	addport 51001
+/c/slb/real 143
+	ena
+	ipver v4
+	rip 1.2.3.33
+	name "testappp03_51001"
+	addport 51001
+/c/slb/real 144
+	ena
+	ipver v4
+	rip 1.2.3.34
+	name "testappp04_51001"
+	addport 51001
+/c/slb/real 605
+	ena
+	ipver v4
+	rip 1.2.3.11
+	name "testapp201_50001"
+	addport 50001
+/c/slb/real 607
+	ena
+	ipver v4
+	rip 1.2.3.12
+	name "testapp202_50001"
+	addport 50001
+/c/slb/real 615
+	ena
+	ipver v4
+	rip 1.2.3.11
+	name "testapp201_51001"
+	addport 51001
+/c/slb/real 617
+	ena
+	ipver v4
+	rip 1.2.3.12
+	name "testapp202_51001"
+	addport 51001
+/c/slb/real 18812
+	ena
+	ipver v4
+	rip 1.2.3.12
+/c/slb/real 18813
+	ena
+	ipver v4
+	rip 1.2.3.13
+/c/slb/real test_50001
+	ena
+	ipver v4
+	rip 1.2.3.11
+	health ergebnisw_50001
+	name "testapp201 port 50001"
+	addport 50001
+/c/slb/real test_51001
+	ena
+	ipver v4
+	rip 1.2.3.11
+	name "testapp201 port 51001"
+	addport 51001
+/c/slb/group 12
+	ipver v4
+	add 15
+	add 16
+/c/slb/group 13
+	ipver v4
+	add 18812
+	add 18813
+/c/slb/group 22
+	ipver v4
+	metric roundrobin
+	add 41
+	add 42
+	add 43
+	add 44
+	add 141
+	add 142
+	add 143
+	add 144
+	add test_50001
+	add test_51001
+/c/slb/group 33
+	ipver v4
+	metric roundrobin
+	add test_50001
+	add test_51001
+/c/slb/group 100
+	ipver v4
+	add 102
+	add 103
+/c/slb/group 500
+	ipver v4
+/c/slb/pip/type vlan
+/c/slb/pip/add 1.2.3.56 1898
+/c/slb/virt 1
+	ena
+	ipver v4
+	vip 1.2.3.38
+/c/slb/virt 1/service 443 https
+	group 100
+	rport 443
+/c/slb/virt 11
+	ena
+	ipver v4
+	vip 1.2.3.39
+/c/slb/virt 11/service 22 ssh
+	group 13
+	rport 22
+/c/slb/virt 21
+	dis
+	ipver v4
+	vip 1.2.3.50
+/c/slb/virt 21/service 443 https
+	group 22
+	rport 0
+	dbind forceproxy
+	tmout 30
+/c/slb/virt 21/service 443 https/http
+	xforward ena
+	httpslb urlslb
+/c/slb/virt 21/service 443 https/ssl
+	srvrcert group ergebniswweb
+	sslpol comca44
+/c/slb/virt 21/service 80 http
+	action redirect
+	group 1
+	rport 80
+	redirect "https://$HOST/$PATH?$QUERY"
+	dbind forceproxy
+/c/slb/virt 22
+	ena
+	ipver v4
+	vip 1.2.3.51
+/c/slb/virt 22/service 443 https
+	group 33
+	rport 0
+	dbind forceproxy
+	tmout 2
+/c/slb/virt 22/service 443 https/http
+	xforward ena
+	httpslb urlslb
+/c/slb/virt 22/service 443 https/ssl
+	srvrcert group ergebniswweb
+	sslpol comca44
+/c/slb/virt 22/service 80 http
+	action redirect
+	group 1
+	rport 80
+	redirect "https://$HOST/$PATH?$QUERY"
+	dbind forceproxy
+/c/l3/hamode vrrp
+/c/l3/ha
+	haname 91d545ffca60251508b0a6aaaaa6c084
+/c/slb/layer7/slb
+	case dis
+	ren 2 "auth"
+	ren 3 "ergebnisw/"
+	ren 4 "ergebnisw\\?"
+	ren 5 "ergebnisw^$"
+	ren 6 "ergebnisw"
+/c/slb/real 41/layer7
+	exclude e
+	addlb 2
+/c/slb/real 42/layer7
+	exclude e
+	addlb 2
+/c/slb/real 43/layer7
+	exclude e
+	addlb 2
+/c/slb/real 44/layer7
+	exclude e
+	addlb 2
+/c/slb/real 141/layer7
+	addlb 2
+/c/slb/real 142/layer7
+	addlb 2
+/c/slb/real 143/layer7
+	addlb 2
+/c/slb/real 144/layer7
+	addlb 2
+/c/slb/real 605/layer7
+	exclude e
+	addlb 3
+/c/slb/real 607/layer7
+	exclude e
+	addlb 2
+/c/slb/real 615/layer7
+	addlb 2
+/c/slb/real 617/layer7
+	addlb 2
+/c/slb/real test_50001/layer7
+	exclude e
+	addlb 2
+/c/slb/real test_51001/layer7
+	addlb 2
+/c/slb/virt 21/service 443 https/pbind cookie passive "JSESSIONID" 1 64 disable
+/c/slb/virt 21/service 443 https/http/rcount 1
+/c/slb/virt 22/service 443 https/pbind cookie passive "JSESSIONID" 1 64 disable
+/c/slb/virt 22/service 443 https/http/rcount 1
+/c/slb/gslb
+	off
+	hostlk ena
+/c/sys/access/https/cert WebManagementCert
+/c/sys/access/https/https e
+/c/sys/access/https/tlsver/tls11 e
+/
+script end  /**** DO NOT EDIT THIS LINE!
