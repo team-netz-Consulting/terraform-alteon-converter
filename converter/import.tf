@@ -190,30 +190,30 @@ import {
 
 import {
   to = alteon_virtual_service.virtual_service_1_443_https
-  id = "1/443"
+  id = "1/1"
 }
 
 import {
   to = alteon_virtual_service.virtual_service_11_22_ssh
-  id = "11/22"
-}
-
-import {
-  to = alteon_virtual_service.virtual_service_21_80_http
-  id = "21/80"
+  id = "11/1"
 }
 
 import {
   to = alteon_virtual_service.virtual_service_21_443_https
-  id = "21/443"
+  id = "21/1"
 }
 
 import {
-  to = alteon_virtual_service.virtual_service_22_80_http
-  id = "22/80"
+  to = alteon_virtual_service.virtual_service_21_80_http
+  id = "21/2"
 }
 
 import {
   to = alteon_virtual_service.virtual_service_22_443_https
-  id = "22/443"
+  id = "22/1"
+}
+
+import {
+  to = alteon_virtual_service.virtual_service_22_80_http
+  id = "22/2"
 }

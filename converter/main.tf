@@ -379,7 +379,7 @@ resource "alteon_virtual_server" "virtual_server_1" {
 
 resource "alteon_virtual_service" "virtual_service_1_443_https" {
   servindex = "1"
-  index = 443
+  index = 1
   virt_port = 443
   real_port = 443
   real_group = "100"
@@ -394,7 +394,7 @@ resource "alteon_virtual_server" "virtual_server_11" {
 
 resource "alteon_virtual_service" "virtual_service_11_22_ssh" {
   servindex = "11"
-  index = 22
+  index = 1
   virt_port = 22
   real_port = 22
   real_group = "13"
@@ -407,20 +407,9 @@ resource "alteon_virtual_server" "virtual_server_21" {
   virt_server_state = 3
 }
 
-resource "alteon_virtual_service" "virtual_service_21_80_http" {
-  servindex = "21"
-  index = 80
-  virt_port = 80
-  real_port = 80
-  real_group = "1"
-  d_bind = 2
-  action = 2
-  redirect = "https://$HOST/$PATH?$QUERY"
-}
-
 resource "alteon_virtual_service" "virtual_service_21_443_https" {
   servindex = "21"
-  index = 443
+  index = 1
   virt_port = 443
   real_port = 0
   real_group = "22"
@@ -432,16 +421,9 @@ resource "alteon_virtual_service" "virtual_service_21_443_https" {
   serv_cert_grp_mark = 1
 }
 
-resource "alteon_virtual_server" "virtual_server_22" {
-  index = "22"
-  virt_server_ip_address = "1.2.3.51"
-  virt_server_ip_ver = 1
-  virt_server_state = 2
-}
-
-resource "alteon_virtual_service" "virtual_service_22_80_http" {
-  servindex = "22"
-  index = 80
+resource "alteon_virtual_service" "virtual_service_21_80_http" {
+  servindex = "21"
+  index = 2
   virt_port = 80
   real_port = 80
   real_group = "1"
@@ -450,9 +432,16 @@ resource "alteon_virtual_service" "virtual_service_22_80_http" {
   redirect = "https://$HOST/$PATH?$QUERY"
 }
 
+resource "alteon_virtual_server" "virtual_server_22" {
+  index = "22"
+  virt_server_ip_address = "1.2.3.51"
+  virt_server_ip_ver = 1
+  virt_server_state = 2
+}
+
 resource "alteon_virtual_service" "virtual_service_22_443_https" {
   servindex = "22"
-  index = 443
+  index = 1
   virt_port = 443
   real_port = 0
   real_group = "33"
@@ -462,4 +451,15 @@ resource "alteon_virtual_service" "virtual_service_22_443_https" {
   ss_lpol = "comca44"
   serv_cert = "ergebniswweb"
   serv_cert_grp_mark = 1
+}
+
+resource "alteon_virtual_service" "virtual_service_22_80_http" {
+  servindex = "22"
+  index = 2
+  virt_port = 80
+  real_port = 80
+  real_group = "1"
+  d_bind = 2
+  action = 2
+  redirect = "https://$HOST/$PATH?$QUERY"
 }
