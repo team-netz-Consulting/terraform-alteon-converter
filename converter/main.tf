@@ -34,44 +34,68 @@ resource "alteon_ssl_policy" "ssl_policy_comca44" {
   pass_info_frontend = 2
 }
 
-resource "alteon_cli_command" "cli_l3_vrrp_vr_123" {
-  agalteonclicommand = "/c/l3/vrrp/vr 123/dis/ipver v4/vrid 123/if 4/prio 22/addr 1.2.3.50/preem dis/share dis"
+resource "alteon_vrrp" "vrrp_123" {
+  index = 123
+  vrid = 123
+  version = "v4"
+  addr = "1.2.3.50"
+  if_index = 4
+  priority = 22
+  state = false
+  preempt = false
+  sharing = false
+  track_ip_intf = true
 }
 
-resource "alteon_cli_command" "cli_l3_vrrp_vr_123_track" {
-  agalteonclicommand = "/c/l3/vrrp/vr 123/track/ifs e"
+resource "alteon_vrrp" "vrrp_124" {
+  index = 124
+  vrid = 124
+  version = "v4"
+  addr = "1.2.3.51"
+  if_index = 4
+  priority = 101
+  state = true
+  preempt = false
+  sharing = false
+  track_ip_intf = true
 }
 
-resource "alteon_cli_command" "cli_l3_vrrp_vr_124" {
-  agalteonclicommand = "/c/l3/vrrp/vr 124/ena/ipver v4/vrid 124/if 4/prio 101/addr 1.2.3.51/preem dis/share dis"
+resource "alteon_vrrp" "vrrp_138" {
+  index = 138
+  vrid = 138
+  version = "v4"
+  addr = "1.2.3.30"
+  if_index = 4
+  priority = 101
+  state = false
+  sharing = false
+  track_ip_intf = true
 }
 
-resource "alteon_cli_command" "cli_l3_vrrp_vr_124_track" {
-  agalteonclicommand = "/c/l3/vrrp/vr 124/track/ifs e"
+resource "alteon_vrrp" "vrrp_141" {
+  index = 141
+  vrid = 141
+  version = "v4"
+  addr = "1.2.3.38"
+  if_index = 4
+  priority = 222
+  state = true
+  preempt = false
+  sharing = false
+  track_ip_intf = true
 }
 
-resource "alteon_cli_command" "cli_l3_vrrp_vr_138" {
-  agalteonclicommand = "/c/l3/vrrp/vr 138/dis/ipver v4/vrid 138/if 4/prio 101/addr 1.2.3.30/share dis"
-}
-
-resource "alteon_cli_command" "cli_l3_vrrp_vr_138_track" {
-  agalteonclicommand = "/c/l3/vrrp/vr 138/track/ifs e"
-}
-
-resource "alteon_cli_command" "cli_l3_vrrp_vr_141" {
-  agalteonclicommand = "/c/l3/vrrp/vr 141/ena/ipver v4/vrid 141/if 4/prio 222/addr 1.2.3.38/preem dis/share dis"
-}
-
-resource "alteon_cli_command" "cli_l3_vrrp_vr_141_track" {
-  agalteonclicommand = "/c/l3/vrrp/vr 141/track/ifs e"
-}
-
-resource "alteon_cli_command" "cli_l3_vrrp_vr_142" {
-  agalteonclicommand = "/c/l3/vrrp/vr 142/ena/ipver v4/vrid 142/if 4/prio 222/addr 1.2.3.39/preem dis/share dis"
-}
-
-resource "alteon_cli_command" "cli_l3_vrrp_vr_142_track" {
-  agalteonclicommand = "/c/l3/vrrp/vr 142/track/ifs e"
+resource "alteon_vrrp" "vrrp_142" {
+  index = 142
+  vrid = 142
+  version = "v4"
+  addr = "1.2.3.39"
+  if_index = 4
+  priority = 222
+  state = true
+  preempt = false
+  sharing = false
+  track_ip_intf = true
 }
 
 resource "alteon_cli_command" "cli_slb_ssl_certs_group_1" {

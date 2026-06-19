@@ -1,4 +1,29 @@
 import {
+  to = alteon_vrrp.vrrp_123
+  id = "123"
+}
+
+import {
+  to = alteon_vrrp.vrrp_124
+  id = "124"
+}
+
+import {
+  to = alteon_vrrp.vrrp_138
+  id = "138"
+}
+
+import {
+  to = alteon_vrrp.vrrp_141
+  id = "141"
+}
+
+import {
+  to = alteon_vrrp.vrrp_142
+  id = "142"
+}
+
+import {
   to = alteon_ssl_policy.ssl_policy_outbound_fe_ssl_inspection
   id = "Outbound_FE_SSL_Inspection"
 }

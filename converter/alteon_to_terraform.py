@@ -22,6 +22,7 @@
 # - /c/slb/advhc/health
 # - /c/slb/filt
 # - /c/l3/vrrp/vr
+# - /c/l3/vrrp/vrgroup
 #
 # Generated Terraform Resources:
 # - alteon_real_server
@@ -30,6 +31,8 @@
 # - alteon_virtual_service
 # - alteon_ssl_policy
 # - alteon_http2_policy
+# - alteon_vrrp
+# - alteon_vrrp_group
 # - alteon_cli_command (fallback for unsupported objects)
 #
 # Author:
@@ -42,7 +45,7 @@
 # https://github.com/team-netz/alteon-to-terraform
 #
 # Version:
-# 0.4.3
+# 0.4.4
 #
 # Release Date:
 # 2026-06-17
@@ -83,17 +86,23 @@
 #
 # Changelog:
 #
+# 0.4.4
+# - Added native alteon_vrrp and alteon_vrrp_group conversion
+# - Merge /c/l3/vrrp/*/track blocks into native VRRP resources
+# - Added Terraform import generation for VRRP resources
+#
 # 0.4.3
 # - Group virtual servers and their virtual services together in output
-#
-# 0.4.2
-# - Added native alteon_server_group support using declarative servers set
 #
 # 0.4.1
 # - Added /c/slb/advhc/health detection
 # - Added SSL certificate group handling
 # - Improved SSL policy conversion
 # - Added support for VRRP configuration detection
+#
+# 0.4.2
+# - Added native alteon_server_group support using declarative servers set
+#
 # 0.4.0
 # - Migrated to flat provider resource model
 # - Added alteon_ssl_policy resource support
@@ -135,8 +144,8 @@
 # =============================================================================
 
 """
-alteon_to_terraform_flat_v4_3.py
-Version: 0.4.3
+alteon_to_terraform_flat_v4_4.py
+Version: 0.4.4
 
 Converts selected Radware Alteon configuration sections into
 Terraform resources for the Alteon Terraform Provider.
@@ -150,12 +159,13 @@ Native Resources:
 - /c/slb/virt/service            -> alteon_virtual_service
 - /c/slb/ssl/sslpol             -> alteon_ssl_policy
 - /c/slb/http2/*                -> alteon_http2_policy
+- /c/l3/vrrp/vr                  -> alteon_vrrp
+- /c/l3/vrrp/vrgroup             -> alteon_vrrp_group
 
 CLI Fallback Resources:
 - /c/slb/filt
 - /c/slb/advhc/health
 - /c/slb/ssl/certs/group
-- /c/l3/vrrp/vr
 
 Import generation:
 - alteon_real_server
@@ -164,6 +174,8 @@ Import generation:
 - alteon_virtual_service
 - alteon_ssl_policy
 - alteon_http2_policy
+- alteon_vrrp
+- alteon_vrrp_group
 
 Intentionally ignored:
 - Private keys
@@ -188,6 +200,8 @@ Import IDs:
     Virtual Server   -> <index>
     SSL Policy       -> <name>
     Virtual Service  -> <virt_id>/<service_port>
+    VRRP             -> <index>
+    VRRP Group       -> <index>
 ```
 
 """
@@ -203,7 +217,7 @@ from typing import Any, Iterable
 
 __author__ = "Michael Schwenke"
 __company__ = "Team-Netz GmbH"
-__version__ = "0.4.3"
+__version__ = "0.4.4"
 __license__ = "Apache-2.0"
 __status__ = "Development"
 
@@ -443,7 +457,19 @@ def is_http2_policy_path(path: str) -> bool:
 
 
 def is_vrrp_path(path: str) -> bool:
-    return bool(re.fullmatch(r"/c/l3/vrrp/vr\s+\S+(?:/.+)?", path))
+    return bool(re.fullmatch(r"/c/l3/vrrp/vr\s+[^/\s]+", path))
+
+
+def is_vrrp_subpath(path: str) -> bool:
+    return bool(re.fullmatch(r"/c/l3/vrrp/vr\s+[^/\s]+/.+", path))
+
+
+def is_vrrp_group_path(path: str) -> bool:
+    return bool(re.fullmatch(r"/c/l3/vrrp/(?:vrgroup|group)\s+[^/\s]+", path))
+
+
+def is_vrrp_group_subpath(path: str) -> bool:
+    return bool(re.fullmatch(r"/c/l3/vrrp/(?:vrgroup|group)\s+[^/\s]+/.+", path))
 
 
 def is_advhc_health_path(path: str) -> bool:
@@ -460,7 +486,6 @@ def is_cli_supported_path(path: str) -> bool:
         or is_advhc_health_path(path)
         or re.fullmatch(r"/c/slb/filt\s+\S+(?:/.+)?", path)
         or is_real_subpath(path)
-        or is_vrrp_path(path)
     )
 
 
@@ -556,6 +581,180 @@ def block_to_real_server(block: Block) -> tuple[str, list[str]] | None:
             attrs[tf_key] = value
 
     return f"real_server_{index}", hcl_resource("alteon_real_server", f"real_server_{index}", attrs)
+
+
+
+def cli_bool(value: str | None) -> bool | None:
+    """Mappt Alteon CLI enable/disable-Werte auf Terraform bool."""
+    value = clean_quote(value)
+    if not value:
+        return None
+    v = value.lower().strip()
+    if v in {"ena", "enabled", "enable", "e", "on", "yes", "true", "1"}:
+        return True
+    if v in {"dis", "disabled", "disable", "d", "off", "no", "false", "2", "0"}:
+        return False
+    return None
+
+
+def vrrp_version(value: str | None) -> str | None:
+    value = clean_quote(value)
+    if not value:
+        return None
+    v = value.lower().strip()
+    if v in {"v4", "ipv4", "4", "1"}:
+        return "v4"
+    if v in {"v6", "ipv6", "6", "2"}:
+        return "v6"
+    return None
+
+
+def parse_vrrp_track(commands: list[str]) -> dict[str, Any]:
+    parsed = parse_commands(commands)
+    attrs: dict[str, Any] = {}
+
+    # Alteon track CLI shorthand -> provider bool fields.
+    mapping = {
+        "vrs": "track_virt_rtr",
+        "virt": "track_virt_rtr",
+        "virtrtr": "track_virt_rtr",
+        "ifs": "track_ip_intf",
+        "if": "track_ip_intf",
+        "intf": "track_ip_intf",
+        "ports": "track_vlan_port",
+        "port": "track_vlan_port",
+        "vlan": "track_vlan_port",
+        "l4": "track_l4_port",
+        "real": "track_real_server",
+        "rserver": "track_real_server",
+        "hsrp": "track_hsrp",
+        "hsrv": "track_hsrv",
+        "swext": "track_sw_ext",
+        "isl": "track_isl_port_include",
+    }
+
+    for cli_key, tf_key in mapping.items():
+        value = cli_bool(one_value(parsed, cli_key))
+        if value is not None:
+            attrs[tf_key] = value
+
+    return attrs
+
+
+def merge_vrrp_blocks(blocks: list[Block]) -> dict[str, dict[str, Any]]:
+    vrrps: dict[str, dict[str, Any]] = {}
+    for block in blocks:
+        m = re.fullmatch(r"/c/l3/vrrp/vr\s+([^/\s]+)(?:/(.+))?", block.path)
+        if not m:
+            continue
+        index = m.group(1)
+        suffix = m.group(2)
+        data = vrrps.setdefault(index, {"index": index, "base": [], "track": []})
+        if suffix == "track":
+            data["track"].extend(block.commands)
+        elif suffix:
+            # Unknown VRRP subcontexts are intentionally ignored by native mapping.
+            pass
+        else:
+            data["base"].extend(block.commands)
+    return vrrps
+
+
+def merge_vrrp_group_blocks(blocks: list[Block]) -> dict[str, dict[str, Any]]:
+    groups: dict[str, dict[str, Any]] = {}
+    for block in blocks:
+        m = re.fullmatch(r"/c/l3/vrrp/(?:vrgroup|group)\s+([^/\s]+)(?:/(.+))?", block.path)
+        if not m:
+            continue
+        index = m.group(1)
+        suffix = m.group(2)
+        data = groups.setdefault(index, {"index": index, "base": [], "track": []})
+        if suffix == "track":
+            data["track"].extend(block.commands)
+        elif suffix:
+            pass
+        else:
+            data["base"].extend(block.commands)
+    return groups
+
+
+def vrrp_common_attrs(index: str, base_commands: list[str], track_commands: list[str], include_addr: bool) -> dict[str, Any]:
+    parsed = parse_commands(base_commands)
+
+    index_int = as_int_or_enum(index)
+    attrs: dict[str, Any] = {
+        "index": index_int if index_int is not None else index,
+    }
+
+    vrid = as_int_or_enum(one_value(parsed, "vrid") or one_value(parsed, "id"))
+    if vrid is None:
+        # Provider requires vrid. Alteon vrgroup configs often omit it; use the
+        # table index as safe default.
+        vrid = index_int
+    if vrid is not None:
+        attrs["vrid"] = vrid
+
+    version = vrrp_version(one_value(parsed, "ipver") or one_value(parsed, "version"))
+    if version:
+        attrs["version"] = version
+
+    if include_addr:
+        addr = clean_quote(one_value(parsed, "addr"))
+        if addr:
+            if version == "v6":
+                attrs["ipv6_addr"] = addr
+            else:
+                attrs["addr"] = addr
+
+    for cli_key, tf_key in {
+        "if": "if_index",
+        "ifindex": "if_index",
+        "adver": "interval",
+        "interval": "interval",
+        "prio": "priority",
+        "priority": "priority",
+        "ipv6interval": "ipv6_interval",
+        "ospfcost": "ospf_cost",
+    }.items():
+        value = as_int_or_enum(one_value(parsed, cli_key))
+        if value is not None:
+            attrs[tf_key] = value
+
+    # State may be represented either as standalone "ena/dis" commands or as a
+    # keyed "state ena/dis" value.
+    if "ena" in parsed:
+        attrs["state"] = True
+    elif "dis" in parsed:
+        attrs["state"] = False
+    else:
+        state = cli_bool(one_value(parsed, "state"))
+        if state is not None:
+            attrs["state"] = state
+
+    for cli_key, tf_key in {
+        "preem": "preempt",
+        "preempt": "preempt",
+        "share": "sharing",
+        "sharing": "sharing",
+    }.items():
+        value = cli_bool(one_value(parsed, cli_key))
+        if value is not None:
+            attrs[tf_key] = value
+
+    attrs.update(parse_vrrp_track(track_commands))
+    return attrs
+
+
+def vrrp_to_hcl(index: str, data: dict[str, Any]) -> tuple[str, list[str]]:
+    attrs = vrrp_common_attrs(index, data.get("base", []), data.get("track", []), include_addr=True)
+    res_name = f"vrrp_{index}"
+    return res_name, hcl_resource("alteon_vrrp", res_name, attrs)
+
+
+def vrrp_group_to_hcl(index: str, data: dict[str, Any]) -> tuple[str, list[str]]:
+    attrs = vrrp_common_attrs(index, data.get("base", []), data.get("track", []), include_addr=False)
+    res_name = f"vrrp_group_{index}"
+    return res_name, hcl_resource("alteon_vrrp_group", res_name, attrs)
 
 
 
@@ -1070,6 +1269,8 @@ def blocks_to_terraform(blocks: Iterable[Block], native: bool = True) -> str:
     service_data = merge_service_blocks(blocks)
     ssl_policy_data = merge_ssl_policy_blocks(blocks)
     http2_policy_data = merge_http2_policy_blocks(blocks)
+    vrrp_data = merge_vrrp_blocks(blocks)
+    vrrp_group_data = merge_vrrp_group_blocks(blocks)
 
     # Pre-render services grouped by virtual server ID.
     services_by_virt: dict[str, list[tuple[tuple[str, int, str | None], list[str]]]] = {}
@@ -1112,6 +1313,10 @@ def blocks_to_terraform(blocks: Iterable[Block], native: bool = True) -> str:
             if native and emitted_http2_policies:
                 continue
 
+        if is_vrrp_subpath(block.path) or is_vrrp_group_subpath(block.path):
+            # Track subcontexts are merged into their parent native resource.
+            continue
+
         # Virtual servers are handled in the next pass so services can be placed
         # directly below their parent virtual server.
         if is_virt_path(block.path):
@@ -1123,13 +1328,21 @@ def blocks_to_terraform(blocks: Iterable[Block], native: bool = True) -> str:
             rendered = block_to_real_server(block)
         elif native and is_group_path(block.path):
             rendered = block_to_server_group(block)
+        elif native and is_vrrp_path(block.path):
+            index = path_id(r"/c/l3/vrrp/vr\s+([^/\s]+)", block.path)
+            if index and index in vrrp_data:
+                rendered = vrrp_to_hcl(index, vrrp_data[index])
+        elif native and is_vrrp_group_path(block.path):
+            index = path_id(r"/c/l3/vrrp/(?:vrgroup|group)\s+([^/\s]+)", block.path)
+            if index and index in vrrp_group_data:
+                rendered = vrrp_group_to_hcl(index, vrrp_group_data[index])
 
         if rendered:
             _, lines = rendered
             out.extend(lines)
             out.append("")
         elif is_cli_supported_path(block.path) or (
-            not native and (is_real_path(block.path) or is_group_path(block.path))
+            not native and (is_real_path(block.path) or is_group_path(block.path) or is_vrrp_path(block.path) or is_vrrp_group_path(block.path))
         ):
             out.extend(cli_command_to_hcl(block, used_cli_names))
             out.append("")
@@ -1221,6 +1434,16 @@ def collect_imports(blocks: Iterable[Block], native: bool = True) -> list[dict[s
             if index:
                 add(f"alteon_server_group.{safe_name(f'server_group_{index}')}", index)
 
+        elif is_vrrp_path(block.path):
+            index = path_id(r"/c/l3/vrrp/vr\s+([^/\s]+)", block.path)
+            if index:
+                add(f"alteon_vrrp.{safe_name(f'vrrp_{index}')}", index)
+
+        elif is_vrrp_group_path(block.path):
+            index = path_id(r"/c/l3/vrrp/(?:vrgroup|group)\s+([^/\s]+)", block.path)
+            if index:
+                add(f"alteon_vrrp_group.{safe_name(f'vrrp_group_{index}')}", index)
+
         elif is_virt_path(block.path):
             index = path_id(r"/c/slb/virt\s+(\S+)", block.path)
             parsed = parse_commands(block.commands)
@@ -1298,10 +1521,14 @@ def main() -> int:
         or is_virt_service_path(b.path)
         or is_ssl_policy_path(b.path)
         or is_http2_policy_path(b.path)
+        or is_vrrp_path(b.path)
+        or is_vrrp_group_path(b.path)
+        or is_vrrp_subpath(b.path)
+        or is_vrrp_group_subpath(b.path)
         or is_cli_supported_path(b.path)
     ]
 
-    print("alteon_to_terraform_flat_v4_3")
+    print("alteon_to_terraform_flat_v4_4")
     print(f"OK: {len(relevant)} relevante Alteon-Blöcke nach {args.output} geschrieben.")
     if args.import_file:
         print(f"OK: {len(generated_imports)} Import-Blöcke nach {args.import_file} geschrieben.")
