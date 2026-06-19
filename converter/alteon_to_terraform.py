@@ -45,7 +45,7 @@
 # https://github.com/team-netz/alteon-to-terraform
 #
 # Version:
-# 0.4.4
+# 0.4.5
 #
 # Release Date:
 # 2026-06-17
@@ -85,6 +85,10 @@
 # production environments.
 #
 # Changelog:
+#
+# 0.4.5
+# - Fixed alteon_virtual_service key handling: index is service ordinal, virt_port is listener port
+# - Fixed virtual service import ID format to <servindex>/<service_index>
 #
 # 0.4.4
 # - Added native alteon_vrrp and alteon_vrrp_group conversion
@@ -144,8 +148,8 @@
 # =============================================================================
 
 """
-alteon_to_terraform_flat_v4_4.py
-Version: 0.4.4
+alteon_to_terraform_flat_v4_5.py
+Version: 0.4.5
 
 Converts selected Radware Alteon configuration sections into
 Terraform resources for the Alteon Terraform Provider.
@@ -199,7 +203,7 @@ Import IDs:
     Server Group     -> <index>
     Virtual Server   -> <index>
     SSL Policy       -> <name>
-    Virtual Service  -> <virt_id>/<service_port>
+    Virtual Service  -> <virt_id>/<service_index>
     VRRP             -> <index>
     VRRP Group       -> <index>
 ```
@@ -217,7 +221,7 @@ from typing import Any, Iterable
 
 __author__ = "Michael Schwenke"
 __company__ = "Team-Netz GmbH"
-__version__ = "0.4.4"
+__version__ = "0.4.5"
 __license__ = "Apache-2.0"
 __status__ = "Development"
 
@@ -959,7 +963,20 @@ def block_to_virtual_server(block: Block) -> tuple[str, list[str]] | None:
 
 
 def merge_service_blocks(blocks: list[Block]) -> dict[tuple[str, int, str | None], dict[str, Any]]:
+    """
+    Merge all /c/slb/virt <id>/service <port> ... subcontexts.
+
+    Provider key semantics:
+      servindex = virtual server index
+      index     = ordinal service index on that virtual server (1, 2, ...)
+      virt_port = actual listener port from Alteon CLI
+
+    The dictionary key remains (virt_id, port, protocol), but each service gets
+    a stable service_index assigned in source order per virtual server.
+    """
     services: dict[tuple[str, int, str | None], dict[str, Any]] = {}
+    service_order_by_virt: dict[str, list[tuple[str, int, str | None]]] = {}
+
     for block in blocks:
         parsed_header = parse_service_header(block.path)
         if not parsed_header:
@@ -967,19 +984,22 @@ def merge_service_blocks(blocks: list[Block]) -> dict[tuple[str, int, str | None
 
         virt_id, port, proto, suffix = parsed_header
         key = (virt_id, port, proto)
-        data = services.setdefault(
-            key,
-            {
+
+        if key not in services:
+            service_order_by_virt.setdefault(virt_id, []).append(key)
+            services[key] = {
                 "virt_id": virt_id,
                 "port": port,
                 "protocol": proto,
+                "service_index": None,
                 "base": [],
                 "ssl": [],
                 "http": [],
                 "other": [],
                 "paths": [],
-            },
-        )
+            }
+
+        data = services[key]
         data["paths"].append(block.path)
         if suffix == "ssl":
             data["ssl"].extend(block.commands)
@@ -991,8 +1011,12 @@ def merge_service_blocks(blocks: list[Block]) -> dict[tuple[str, int, str | None
             data["other"].append(f"__path_suffix__ {suffix}")
         else:
             data["base"].extend(block.commands)
-    return services
 
+    for virt_id, keys in service_order_by_virt.items():
+        for ordinal, key in enumerate(keys, start=1):
+            services[key]["service_index"] = ordinal
+
+    return services
 
 def map_service_action(value: str | None) -> int | None:
     value = clean_quote(value)
@@ -1034,9 +1058,11 @@ def service_to_hcl(data: dict[str, Any]) -> tuple[str, list[str]]:
     parsed_ssl = parse_commands(data["ssl"])
     parsed_http = parse_commands(data["http"])
 
+    service_index = int(data.get("service_index") or 1)
+
     attrs: dict[str, Any] = {
         "servindex": virt_id,
-        "index": int(port),
+        "index": service_index,
         "virt_port": int(port),
     }
 
@@ -1277,7 +1303,7 @@ def blocks_to_terraform(blocks: Iterable[Block], native: bool = True) -> str:
     if native:
         for key, data in sorted(
             service_data.items(),
-            key=lambda item: (item[1]["virt_id"], item[1]["port"], item[1]["protocol"] or ""),
+            key=lambda item: (item[1]["virt_id"], int(item[1].get("service_index") or 0)),
         ):
             _, lines = service_to_hcl(data)
             services_by_virt.setdefault(data["virt_id"], []).append((key, lines))
@@ -1382,7 +1408,7 @@ def blocks_to_terraform(blocks: Iterable[Block], native: bool = True) -> str:
     if native:
         for key, data in sorted(
             service_data.items(),
-            key=lambda item: (item[1]["virt_id"], item[1]["port"], item[1]["protocol"] or ""),
+            key=lambda item: (item[1]["virt_id"], int(item[1].get("service_index") or 0)),
         ):
             if key in emitted_service_keys:
                 continue
@@ -1464,13 +1490,18 @@ def collect_imports(blocks: Iterable[Block], native: bool = True) -> list[dict[s
                 name = m.group(1)
                 add(f"alteon_http2_policy.{safe_name(f'http2_policy_{name}')}", name)
 
-    # New flat virtual_service has two keys. The most common import ID format for
-    # such resources is "servindex/index"; keep it generated but easy to edit.
-    for _, data in sorted(service_data.items(), key=lambda item: (item[1]["virt_id"], item[1]["port"], item[1]["protocol"] or "")):
+    # New flat virtual_service has two keys:
+    #   servindex = virtual server index
+    #   index     = ordinal service index on that virtual server, not the port.
+    for _, data in sorted(service_data.items(), key=lambda item: (item[1]["virt_id"], int(item[1].get("service_index") or 0))):
         virt_id = data["virt_id"]
         port = data["port"]
         proto = data["protocol"] or "ip"
-        add(f"alteon_virtual_service.{safe_name(f'virtual_service_{virt_id}_{port}_{proto}')}", f"{virt_id}/{port}")
+        service_index = int(data.get("service_index") or 1)
+        add(
+            f"alteon_virtual_service.{safe_name(f'virtual_service_{virt_id}_{port}_{proto}')}",
+            f"{virt_id}/{service_index}",
+        )
 
     return imports
 
@@ -1528,7 +1559,7 @@ def main() -> int:
         or is_cli_supported_path(b.path)
     ]
 
-    print("alteon_to_terraform_flat_v4_4")
+    print("alteon_to_terraform_flat_v4_5")
     print(f"OK: {len(relevant)} relevante Alteon-Blöcke nach {args.output} geschrieben.")
     if args.import_file:
         print(f"OK: {len(generated_imports)} Import-Blöcke nach {args.import_file} geschrieben.")
