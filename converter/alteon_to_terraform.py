@@ -45,7 +45,7 @@
 # https://github.com/team-netz/alteon-to-terraform
 #
 # Version:
-# 0.4.5
+# 0.4.6
 #
 # Release Date:
 # 2026-06-17
@@ -85,6 +85,9 @@
 # production environments.
 #
 # Changelog:
+#
+# 0.4.6
+# - Added VRRP group virtual_routers mapping from /c/l3/vrrp/vrgroup add entries
 #
 # 0.4.5
 # - Fixed alteon_virtual_service key handling: index is service ordinal, virt_port is listener port
@@ -148,8 +151,8 @@
 # =============================================================================
 
 """
-alteon_to_terraform_flat_v4_5.py
-Version: 0.4.5
+alteon_to_terraform_flat_v4_6.py
+Version: 0.4.6
 
 Converts selected Radware Alteon configuration sections into
 Terraform resources for the Alteon Terraform Provider.
@@ -221,7 +224,7 @@ from typing import Any, Iterable
 
 __author__ = "Michael Schwenke"
 __company__ = "Team-Netz GmbH"
-__version__ = "0.4.5"
+__version__ = "0.4.6"
 __license__ = "Apache-2.0"
 __status__ = "Development"
 
@@ -757,6 +760,22 @@ def vrrp_to_hcl(index: str, data: dict[str, Any]) -> tuple[str, list[str]]:
 
 def vrrp_group_to_hcl(index: str, data: dict[str, Any]) -> tuple[str, list[str]]:
     attrs = vrrp_common_attrs(index, data.get("base", []), data.get("track", []), include_addr=False)
+
+    # /c/l3/vrrp/vrgroup <id>
+    #     add 251
+    #     add 248
+    #
+    # Provider schema: virtual_routers = [251, 248]
+    parsed = parse_commands(data.get("base", []))
+    virtual_routers: list[int] = []
+    for value in parsed.get("add", []):
+        vr_index = as_int_or_enum(value)
+        if vr_index is not None:
+            virtual_routers.append(vr_index)
+
+    if virtual_routers:
+        attrs["virtual_routers"] = virtual_routers
+
     res_name = f"vrrp_group_{index}"
     return res_name, hcl_resource("alteon_vrrp_group", res_name, attrs)
 
@@ -1559,7 +1578,7 @@ def main() -> int:
         or is_cli_supported_path(b.path)
     ]
 
-    print("alteon_to_terraform_flat_v4_5")
+    print("alteon_to_terraform_flat_v4_6")
     print(f"OK: {len(relevant)} relevante Alteon-Blöcke nach {args.output} geschrieben.")
     if args.import_file:
         print(f"OK: {len(generated_imports)} Import-Blöcke nach {args.import_file} geschrieben.")
