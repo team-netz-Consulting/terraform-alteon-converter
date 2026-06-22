@@ -13,8 +13,6 @@ resource "alteon_ssl_policy" "ssl_policy_outbound_be_ssl_inspection" {
   convert = 3
   fessl = 3
   bessl = 2
-  fe_tls11_version = 2
-  be_tls11_version = 2
 }
 
 resource "alteon_ssl_policy" "ssl_policy_outbound_fe_ssl_inspection" {
@@ -22,13 +20,48 @@ resource "alteon_ssl_policy" "ssl_policy_outbound_fe_ssl_inspection" {
   name = "Outbound Frontend SSL Inspection"
   admin_status = 2
   convert = 3
-  fe_tls11_version = 2
-  be_tls11_version = 2
 }
 
-resource "alteon_ssl_cert" "ssl_cert_1001_3" {
-  cert_id = "1001"
+resource "alteon_ssl_policy" "ssl_policy_comca44" {
+  nameidindex = "comca44"
+  admin_status = 2
+  convert = 3
+  cipher_userdef = "ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES128-GCM-SHA256"
+  intermca_chain_type = "group"
+  intermca_chain_name = "11"
+  secreneg = "0"
+  bessl = 2
+  pass_info_frontend = 2
+}
+
+resource "alteon_ssl_cert" "ssl_cert_13_3" {
+  cert_id = "13"
   cert_type = 3
+}
+
+resource "alteon_ssl_cert" "ssl_cert_13_5" {
+  cert_id = "13"
+  cert_type = 5
+}
+
+resource "alteon_ssl_cert" "ssl_cert_14_3" {
+  cert_id = "14"
+  cert_type = 3
+}
+
+resource "alteon_ssl_cert" "ssl_cert_14_5" {
+  cert_id = "14"
+  cert_type = 5
+}
+
+resource "alteon_ssl_cert" "ssl_cert_3_5" {
+  cert_id = "3"
+  cert_type = 5
+}
+
+resource "alteon_ssl_cert" "ssl_cert_4_5" {
+  cert_id = "4"
+  cert_type = 5
 }
 
 resource "alteon_ssl_cert" "ssl_cert_webmanagementcert_3" {
@@ -36,151 +69,448 @@ resource "alteon_ssl_cert" "ssl_cert_webmanagementcert_3" {
   cert_type = 3
 }
 
-resource "alteon_ssl_cert_group" "ssl_cert_group_242" {
-  group_id = "242"
-  certificates = [1001]
+resource "alteon_ssl_cert" "ssl_cert_web_intern_example_de_3" {
+  cert_id = "web.intern.example.de"
+  cert_type = 3
+}
+
+resource "alteon_ssl_cert_group" "ssl_cert_group_1" {
+  group_id = "1"
+  certificates = [3, 4]
+  type = 5
+}
+
+resource "alteon_ssl_cert_group" "ssl_cert_group_11" {
+  group_id = "11"
+  certificates = [13, 14]
+  type = 5
+}
+
+resource "alteon_ssl_cert_group" "ssl_cert_group_ergebniswweb" {
+  group_id = "ergebniswweb"
   type = 3
 }
 
-resource "alteon_ssl_cert_group" "ssl_cert_group_442" {
-  group_id = "442"
-  certificates = [1001]
-  type = 3
+resource "alteon_vrrp" "vrrp_123" {
+  index = 123
+  vrid = 123
+  version = "v4"
+  addr = "1.2.3.50"
+  if_index = 4
+  priority = 22
+  state = false
+  preempt = false
+  sharing = false
+  track_ip_intf = true
 }
 
-resource "alteon_real_server" "real_server_101102" {
-  index = "101102"
-  ip_addr = "192.168.101.102"
+resource "alteon_vrrp" "vrrp_124" {
+  index = 124
+  vrid = 124
+  version = "v4"
+  addr = "1.2.3.51"
+  if_index = 4
+  priority = 101
+  state = true
+  preempt = false
+  sharing = false
+  track_ip_intf = true
+}
+
+resource "alteon_vrrp" "vrrp_138" {
+  index = 138
+  vrid = 138
+  version = "v4"
+  addr = "1.2.3.30"
+  if_index = 4
+  priority = 101
+  state = false
+  sharing = false
+  track_ip_intf = true
+}
+
+resource "alteon_vrrp" "vrrp_141" {
+  index = 141
+  vrid = 141
+  version = "v4"
+  addr = "1.2.3.38"
+  if_index = 4
+  priority = 222
+  state = true
+  preempt = false
+  sharing = false
+  track_ip_intf = true
+}
+
+resource "alteon_vrrp" "vrrp_142" {
+  index = 142
+  vrid = 142
+  version = "v4"
+  addr = "1.2.3.39"
+  if_index = 4
+  priority = 222
+  state = true
+  preempt = false
+  sharing = false
+  track_ip_intf = true
+}
+
+resource "alteon_advhc_http" "advhc_http_ergebnisw_50001" {
+  id_name = "ergebnisw_50001"
+  dport = 50001
+  https = true
+  path = "/ergebnisw"
+  response_code = "200,301,302,307"
+  response_type = "none"
+}
+
+resource "alteon_real_server" "real_server_15" {
+  index = "15"
+  ip_addr = "1.2.3.31"
+  ip_ver = 1
+  name = "testappp01_443"
+  state = 2
+}
+
+resource "alteon_real_server" "real_server_16" {
+  index = "16"
+  ip_addr = "1.2.3.32"
+  ip_ver = 1
+  name = "testappp02_443"
+  state = 2
+}
+
+resource "alteon_real_server" "real_server_41" {
+  index = "41"
+  ip_addr = "1.2.3.31"
+  ip_ver = 1
+  name = "testappp01_50001"
+  state = 2
+}
+
+resource "alteon_real_server" "real_server_42" {
+  index = "42"
+  ip_addr = "1.2.3.32"
+  ip_ver = 1
+  name = "testappp02_50001"
+  state = 2
+}
+
+resource "alteon_real_server" "real_server_43" {
+  index = "43"
+  ip_addr = "1.2.3.33"
+  ip_ver = 1
+  name = "testappp03_50001"
+  state = 2
+}
+
+resource "alteon_real_server" "real_server_44" {
+  index = "44"
+  ip_addr = "1.2.3.34"
+  ip_ver = 1
+  name = "testappp04_50001"
+  state = 2
+}
+
+resource "alteon_real_server" "real_server_102" {
+  index = "102"
+  ip_addr = "1.2.3.11"
+  ip_ver = 1
+  name = "testapp201_443"
+  state = 2
+}
+
+resource "alteon_real_server" "real_server_103" {
+  index = "103"
+  ip_addr = "1.2.3.12"
+  ip_ver = 1
+  name = "testapp202_443"
+  state = 2
+}
+
+resource "alteon_real_server" "real_server_141" {
+  index = "141"
+  ip_addr = "1.2.3.31"
+  ip_ver = 1
+  name = "testappp01_51001"
+  state = 2
+}
+
+resource "alteon_real_server" "real_server_142" {
+  index = "142"
+  ip_addr = "1.2.3.32"
+  ip_ver = 1
+  name = "testappp02_51001"
+  state = 2
+}
+
+resource "alteon_real_server" "real_server_143" {
+  index = "143"
+  ip_addr = "1.2.3.33"
+  ip_ver = 1
+  name = "testappp03_51001"
+  state = 2
+}
+
+resource "alteon_real_server" "real_server_144" {
+  index = "144"
+  ip_addr = "1.2.3.34"
+  ip_ver = 1
+  name = "testappp04_51001"
+  state = 2
+}
+
+resource "alteon_real_server" "real_server_605" {
+  index = "605"
+  ip_addr = "1.2.3.11"
+  ip_ver = 1
+  name = "testapp201_50001"
+  state = 2
+}
+
+resource "alteon_real_server" "real_server_607" {
+  index = "607"
+  ip_addr = "1.2.3.12"
+  ip_ver = 1
+  name = "testapp202_50001"
+  state = 2
+}
+
+resource "alteon_real_server" "real_server_615" {
+  index = "615"
+  ip_addr = "1.2.3.11"
+  ip_ver = 1
+  name = "testapp201_51001"
+  state = 2
+}
+
+resource "alteon_real_server" "real_server_617" {
+  index = "617"
+  ip_addr = "1.2.3.12"
+  ip_ver = 1
+  name = "testapp202_51001"
+  state = 2
+}
+
+resource "alteon_real_server" "real_server_18812" {
+  index = "18812"
+  ip_addr = "1.2.3.12"
   ip_ver = 1
   state = 2
 }
 
-resource "alteon_real_server" "real_server_101102_a" {
-  index = "101102-a"
-  ip_addr = "192.168.101.102"
+resource "alteon_real_server" "real_server_18813" {
+  index = "18813"
+  ip_addr = "1.2.3.13"
   ip_ver = 1
   state = 2
 }
 
-resource "alteon_real_server" "real_server_101102_b" {
-  index = "101102-b"
-  ip_addr = "192.168.101.102"
+resource "alteon_real_server" "real_server_test_50001" {
+  index = "test_50001"
+  ip_addr = "1.2.3.11"
   ip_ver = 1
+  name = "testapp201 port 50001"
+  state = 2
+  health_id = "ergebnisw_50001"
+}
+
+resource "alteon_real_server" "real_server_test_51001" {
+  index = "test_51001"
+  ip_addr = "1.2.3.11"
+  ip_ver = 1
+  name = "testapp201 port 51001"
   state = 2
 }
 
-resource "alteon_real_server" "real_server_101103" {
-  index = "101103"
-  ip_addr = "192.168.101.103"
-  ip_ver = 1
-  state = 2
-}
-
-resource "alteon_server_group" "server_group_1000" {
-  index = "1000"
-  servers = ["101102"]
+resource "alteon_server_group" "server_group_12" {
+  index = "12"
+  servers = ["15", "16"]
   ip_ver = 1
 }
 
-resource "alteon_server_group" "server_group_1010" {
-  index = "1010"
-  servers = ["101102-a"]
+resource "alteon_server_group" "server_group_13" {
+  index = "13"
+  servers = ["18812", "18813"]
   ip_ver = 1
 }
 
-resource "alteon_server_group" "server_group_1020" {
-  index = "1020"
-  servers = ["101102-b"]
-  ip_ver = 1
-}
-
-resource "alteon_server_group" "server_group_1030" {
-  index = "1030"
-  servers = ["101102-a", "101103"]
-  name = "test_server_group_1030"
+resource "alteon_server_group" "server_group_22" {
+  index = "22"
+  servers = ["41", "42", "43", "44", "141", "142", "143", "144", "test_50001", "test_51001"]
   metric = "roundrobin"
-  health_check_layer = "icmp"
   ip_ver = 1
 }
 
-resource "alteon_filter" "filter_1" {
-  index = 1
-  state = 3
-  src_ip = "10.12.25.13"
-  src_ip_mask = "255.255.255.255"
-  dst_ip = "10.12.148.220"
-  dst_ip_mask = "255.255.255.255"
-  redir_group = "1000"
-  protocol = "6"
-  range_low_dst_port = "443"
-  range_high_dst_port = "443"
-  redir_port = "8080"
-  action = 3
-  ssl_policy = "system_pki_auth"
-  srv_cert = "1001"
-  srv_cert_group = 0
-  dbind = 2
-  rtproxy = 2
+resource "alteon_server_group" "server_group_33" {
+  index = "33"
+  servers = ["test_50001", "test_51001"]
+  metric = "roundrobin"
+  ip_ver = 1
 }
 
-resource "alteon_virtual_server" "virtual_server_1000" {
-  index = "1000"
-  virt_server_ip_address = "10.2.0.213"
+resource "alteon_server_group" "server_group_100" {
+  index = "100"
+  servers = ["102", "103"]
+  ip_ver = 1
+}
+
+resource "alteon_server_group" "server_group_500" {
+  index = "500"
+  ip_ver = 1
+}
+
+resource "alteon_pip" "pip_1_2_3_56" {
+  address = "1.2.3.56"
+  vlans = [1898]
+}
+
+resource "alteon_cli_command" "cli_slb_real_41_layer7" {
+  agalteonclicommand = "/c/slb/real 41/layer7/exclude e/addlb 2"
+}
+
+resource "alteon_cli_command" "cli_slb_real_42_layer7" {
+  agalteonclicommand = "/c/slb/real 42/layer7/exclude e/addlb 2"
+}
+
+resource "alteon_cli_command" "cli_slb_real_43_layer7" {
+  agalteonclicommand = "/c/slb/real 43/layer7/exclude e/addlb 2"
+}
+
+resource "alteon_cli_command" "cli_slb_real_44_layer7" {
+  agalteonclicommand = "/c/slb/real 44/layer7/exclude e/addlb 2"
+}
+
+resource "alteon_cli_command" "cli_slb_real_141_layer7" {
+  agalteonclicommand = "/c/slb/real 141/layer7/addlb 2"
+}
+
+resource "alteon_cli_command" "cli_slb_real_142_layer7" {
+  agalteonclicommand = "/c/slb/real 142/layer7/addlb 2"
+}
+
+resource "alteon_cli_command" "cli_slb_real_143_layer7" {
+  agalteonclicommand = "/c/slb/real 143/layer7/addlb 2"
+}
+
+resource "alteon_cli_command" "cli_slb_real_144_layer7" {
+  agalteonclicommand = "/c/slb/real 144/layer7/addlb 2"
+}
+
+resource "alteon_cli_command" "cli_slb_real_605_layer7" {
+  agalteonclicommand = "/c/slb/real 605/layer7/exclude e/addlb 3"
+}
+
+resource "alteon_cli_command" "cli_slb_real_607_layer7" {
+  agalteonclicommand = "/c/slb/real 607/layer7/exclude e/addlb 2"
+}
+
+resource "alteon_cli_command" "cli_slb_real_615_layer7" {
+  agalteonclicommand = "/c/slb/real 615/layer7/addlb 2"
+}
+
+resource "alteon_cli_command" "cli_slb_real_617_layer7" {
+  agalteonclicommand = "/c/slb/real 617/layer7/addlb 2"
+}
+
+resource "alteon_cli_command" "cli_slb_real_test_50001_layer7" {
+  agalteonclicommand = "/c/slb/real test_50001/layer7/exclude e/addlb 2"
+}
+
+resource "alteon_cli_command" "cli_slb_real_test_51001_layer7" {
+  agalteonclicommand = "/c/slb/real test_51001/layer7/addlb 2"
+}
+
+resource "alteon_virtual_server" "virtual_server_1" {
+  index = "1"
+  virt_server_ip_address = "1.2.3.38"
   virt_server_ip_ver = 1
-  virt_server_state = 3
+  virt_server_state = 2
 }
 
-resource "alteon_virtual_service" "virtual_service_1000_443_https" {
-  servindex = "1000"
+resource "alteon_virtual_service" "virtual_service_1_443_https" {
+  servindex = "1"
   index = 1
   virt_port = 443
   real_port = 443
+  real_group = "100"
+}
+
+resource "alteon_virtual_server" "virtual_server_11" {
+  index = "11"
+  virt_server_ip_address = "1.2.3.39"
+  virt_server_ip_ver = 1
+  virt_server_state = 2
+}
+
+resource "alteon_virtual_service" "virtual_service_11_22_ssh" {
+  servindex = "11"
+  index = 1
+  virt_port = 22
+  real_port = 22
+  real_group = "13"
+}
+
+resource "alteon_virtual_server" "virtual_server_21" {
+  index = "21"
+  virt_server_ip_address = "1.2.3.50"
+  virt_server_ip_ver = 1
+  virt_server_state = 3
+}
+
+resource "alteon_virtual_service" "virtual_service_21_443_https" {
+  servindex = "21"
+  index = 1
+  virt_port = 443
+  real_port = 0
+  real_group = "22"
+  time_out = 30
+  d_bind = 2
+  x_forwarded_for = 2
+  ss_lpol = "comca44"
+  serv_cert = "ergebniswweb"
+  serv_cert_grp_mark = 1
+}
+
+resource "alteon_virtual_service" "virtual_service_21_80_http" {
+  servindex = "21"
+  index = 2
+  virt_port = 80
+  real_port = 80
   real_group = "1"
-  serv_cert = "1001"
-  serv_cert_grp_mark = 0
+  d_bind = 2
+  action = 2
+  redirect = "https://$HOST/$PATH?$QUERY"
 }
 
-resource "alteon_virtual_server" "virtual_server_1010" {
-  index = "1010"
-  virt_server_ip_address = "10.2.0.213"
+resource "alteon_virtual_server" "virtual_server_22" {
+  index = "22"
+  virt_server_ip_address = "1.2.3.51"
   virt_server_ip_ver = 1
-  virt_server_state = 3
+  virt_server_state = 2
 }
 
-resource "alteon_virtual_service" "virtual_service_1010_80_http" {
-  servindex = "1010"
+resource "alteon_virtual_service" "virtual_service_22_443_https" {
+  servindex = "22"
   index = 1
+  virt_port = 443
+  real_port = 0
+  real_group = "33"
+  time_out = 2
+  d_bind = 2
+  x_forwarded_for = 2
+  ss_lpol = "comca44"
+  serv_cert = "ergebniswweb"
+  serv_cert_grp_mark = 1
+}
+
+resource "alteon_virtual_service" "virtual_service_22_80_http" {
+  servindex = "22"
+  index = 2
   virt_port = 80
   real_port = 80
-  real_group = "1010"
-}
-
-resource "alteon_virtual_server" "virtual_server_1020" {
-  index = "1020"
-  virt_server_ip_address = "10.2.0.213"
-  virt_server_ip_ver = 1
-  virt_server_state = 3
-}
-
-resource "alteon_virtual_service" "virtual_service_1020_80_http" {
-  servindex = "1020"
-  index = 1
-  virt_port = 80
-  real_port = 80
-  real_group = "1020"
-}
-
-resource "alteon_virtual_server" "virtual_server_1030" {
-  index = "1030"
-  virt_server_ip_address = "10.2.0.213"
-  virt_server_ip_ver = 1
-  virt_server_state = 3
-}
-
-resource "alteon_virtual_service" "virtual_service_1030_80_http" {
-  servindex = "1030"
-  index = 1
-  virt_port = 80
-  real_port = 80
-  real_group = "1030"
+  real_group = "1"
+  d_bind = 2
+  action = 2
+  redirect = "https://$HOST/$PATH?$QUERY"
 }

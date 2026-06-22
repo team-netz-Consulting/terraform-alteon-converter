@@ -23,6 +23,7 @@ The converter currently supports:
 | Alteon Configuration        | Terraform Resource                                  |
 | --------------------------- | --------------------------------------------------- |
 | `/c/slb/real`               | `alteon_real_server`                                |
+| `/c/slb/real/*/layer7`      | `alteon_real_server_layer7`                         |
 | `/c/slb/group`              | `alteon_server_group`                               |
 | `/c/slb/virt`               | `alteon_virtual_server`                             |
 | `/c/slb/virt/service`       | `alteon_virtual_service`                            |
@@ -59,6 +60,7 @@ The following objects are currently exported as `alteon_cli_command` resources:
 The converter automatically generates Terraform import blocks for:
 
 * Real Servers
+* Real Server Layer7 bindings
 * Server Groups
 * Virtual Servers
 * Virtual Services

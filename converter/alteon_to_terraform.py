@@ -14,6 +14,7 @@
 #
 # Supported Objects:
 # - /c/slb/real
+# - /c/slb/real/layer7
 # - /c/slb/group
 # - /c/slb/virt
 # - /c/slb/virt/service
@@ -30,6 +31,7 @@
 #
 # Generated Terraform Resources:
 # - alteon_real_server
+# - alteon_real_server_layer7
 # - alteon_server_group
 # - alteon_virtual_server
 # - alteon_virtual_service
@@ -103,6 +105,7 @@
 # - Merged known /c/slb/filt subcontexts into native alteon_filter resources
 # - Merged VRRP subcontexts into native VRRP resources instead of CLI fallback
 # - Kept native AdvHC, SSL cert/group, AppShape, PIP, data/content class mappings out of CLI fallback
+# - Added native /c/slb/real <id>/layer7 conversion and import generation
 #
 # 0.4.7
 # - Added native /c/slb/advhc/health conversion and import generation
@@ -186,6 +189,7 @@ Currently supported:
 
 Native Resources:
 - /c/slb/real                    -> alteon_real_server
+- /c/slb/real/layer7             -> alteon_real_server_layer7
 - /c/slb/group                   -> alteon_server_group
 - /c/slb/virt                    -> alteon_virtual_server
 - /c/slb/virt/service            -> alteon_virtual_service
@@ -207,6 +211,7 @@ CLI Fallback Resources:
 
 Import generation:
 - alteon_real_server
+- alteon_real_server_layer7
 - alteon_server_group
 - alteon_virtual_server
 - alteon_virtual_service
@@ -243,6 +248,7 @@ IP Version:
 
 Import IDs:
     Real Server      -> <index>
+    Real Server L7   -> <index>
     Server Group     -> <index>
     Virtual Server   -> <index>
     Filter           -> <index>
@@ -491,11 +497,15 @@ def path_id(pattern: str, path: str) -> str | None:
 
 
 def is_real_path(path: str) -> bool:
-    return bool(re.fullmatch(r"/c/slb/real\s+\S+", path))
+    return bool(re.fullmatch(r"/c/slb/real\s+[^/\s]+", path))
 
 
 def is_real_subpath(path: str) -> bool:
     return bool(re.fullmatch(r"/c/slb/real\s+\S+/.+", path))
+
+
+def is_real_layer7_path(path: str) -> bool:
+    return bool(re.fullmatch(r"/c/slb/real\s+\S+/layer7", path))
 
 
 def is_group_path(path: str) -> bool:
@@ -676,7 +686,7 @@ def is_cli_supported_path(path: str) -> bool:
     return bool(
         is_advhc_health_path(path)
         or is_filter_subpath(path)
-        or is_real_subpath(path)
+        or (is_real_subpath(path) and not is_real_layer7_path(path))
         or is_pip_path(path)
         or is_data_class_path(path)
         or is_content_class_path(path)
@@ -779,6 +789,47 @@ def block_to_real_server(block: Block) -> tuple[str, list[str]] | None:
             attrs[tf_key] = value
 
     return f"real_server_{index}", hcl_resource("alteon_real_server", f"real_server_{index}", attrs)
+
+
+def merge_real_server_layer7_blocks(blocks: list[Block]) -> dict[str, dict[str, Any]]:
+    real_layer7: dict[str, dict[str, Any]] = {}
+    for block in blocks:
+        index = path_id(r"/c/slb/real\s+(\S+)/layer7", block.path)
+        if not index:
+            continue
+
+        parsed = parse_commands(block.commands)
+        attrs = real_layer7.setdefault(index, {"index": index, "urls": []})
+
+        exclude = clean_quote(one_value(parsed, "exclude") or one_value(parsed, "excludestr") or one_value(parsed, "exclude_str"))
+        if exclude:
+            attrs["exclude"] = exclude
+
+        for key in ("addlb", "addurl", "add"):
+            for value in parsed.get(key, []):
+                url_id = as_int_or_enum(clean_quote(value))
+                if url_id is not None and url_id not in attrs["urls"]:
+                    attrs["urls"].append(url_id)
+
+        for key in ("urlbmap", "urls"):
+            value = clean_quote(one_value(parsed, key))
+            if not value:
+                continue
+            for part in re.split(r"[\s,]+", value):
+                url_id = as_int_or_enum(clean_quote(part))
+                if url_id is not None and url_id not in attrs["urls"]:
+                    attrs["urls"].append(url_id)
+
+    for data in real_layer7.values():
+        data["urls"] = sorted(data.get("urls", []))
+        if not data["urls"]:
+            data.pop("urls", None)
+    return real_layer7
+
+
+def real_server_layer7_to_hcl(index: str, attrs: dict[str, Any]) -> tuple[str, list[str]]:
+    res_name = f"real_server_layer7_{index}"
+    return res_name, hcl_resource("alteon_real_server_layer7", res_name, attrs)
 
 
 
@@ -2483,6 +2534,7 @@ def blocks_to_terraform(blocks: Iterable[Block], native: bool = True) -> str:
     used_cli_names: set[str] = set()
 
     service_data = merge_service_blocks(blocks)
+    real_layer7_data = merge_real_server_layer7_blocks(blocks)
     filter_data = merge_filter_blocks(blocks)
     ssl_policy_data = merge_ssl_policy_blocks(blocks)
     ssl_cert_data = merge_ssl_cert_blocks(blocks)
@@ -2508,6 +2560,7 @@ def blocks_to_terraform(blocks: Iterable[Block], native: bool = True) -> str:
             services_by_virt.setdefault(data["virt_id"], []).append((key, lines))
 
     emitted_service_keys: set[tuple[str, int, str | None]] = set()
+    emitted_real_layer7: set[str] = set()
     emitted_filters: set[str] = set()
     emitted_ssl_policies = False
     emitted_ssl_certs = False
@@ -2567,6 +2620,15 @@ def blocks_to_terraform(blocks: Iterable[Block], native: bool = True) -> str:
 
         if native and (is_vrrp_subpath(block.path) or is_vrrp_group_subpath(block.path)):
             # VRRP subcontexts are merged into their parent native resource.
+            continue
+
+        if native and is_real_layer7_path(block.path):
+            index = path_id(r"/c/slb/real\s+(\S+)/layer7", block.path)
+            if index and index in real_layer7_data and index not in emitted_real_layer7:
+                _, lines = real_server_layer7_to_hcl(index, real_layer7_data[index])
+                out.extend(lines)
+                out.append("")
+                emitted_real_layer7.add(index)
             continue
 
         if native and is_advhc_health_path(block.path):
@@ -2665,6 +2727,7 @@ def blocks_to_terraform(blocks: Iterable[Block], native: bool = True) -> str:
         elif is_cli_supported_path(block.path) or (
             not native and (
                 is_real_path(block.path)
+                or is_real_layer7_path(block.path)
                 or is_group_path(block.path)
                 or is_filter_path(block.path)
                 or is_vrrp_path(block.path)
@@ -2756,6 +2819,7 @@ def collect_imports(blocks: Iterable[Block], native: bool = True) -> list[dict[s
             seen.add(key)
 
     service_data = merge_service_blocks(blocks)
+    real_layer7_data = merge_real_server_layer7_blocks(blocks)
     pip_data = merge_pip_blocks(blocks)
     data_class_data = merge_data_class_blocks(blocks)
     content_class_data = merge_content_class_blocks(blocks)
@@ -2776,6 +2840,10 @@ def collect_imports(blocks: Iterable[Block], native: bool = True) -> list[dict[s
             index = path_id(r"/c/slb/group\s+(\S+)", block.path)
             if index:
                 add(f"alteon_server_group.{safe_name(f'server_group_{index}')}", index)
+
+        elif is_real_layer7_path(block.path):
+            for index in sorted(real_layer7_data):
+                add(f"alteon_real_server_layer7.{safe_name(f'real_server_layer7_{index}')}", index)
 
         elif is_filter_path(block.path) or is_filter_subpath(block.path):
             index = path_id(r"/c/slb/filt\s+(\d+)", block.path)
@@ -2910,6 +2978,7 @@ def main() -> int:
     relevant = [
         b for b in blocks
         if is_real_path(b.path)
+        or is_real_layer7_path(b.path)
         or is_group_path(b.path)
         or is_filter_path(b.path)
         or is_filter_subpath(b.path)
