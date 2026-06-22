@@ -89,8 +89,19 @@ resource "alteon_server_group" "server_group_1030" {
   ip_ver = 1
 }
 
-resource "alteon_cli_command" "cli_slb_filt_1" {
-  agalteonclicommand = "/c/slb/filt 1/dis/action redir/ipver v4/sip 10.12.25.13/smask 255.255.255.255/dip 10.12.148.220/dmask 255.255.255.255/proto tcp/dport https/group 1000/rport 8080/vlan any/applic http"
+resource "alteon_filter" "filter_1" {
+  index = 1
+  state = false
+  src_ip = "10.12.25.13"
+  src_mask = "255.255.255.255"
+  dst_ip = "10.12.148.220"
+  dst_mask = "255.255.255.255"
+  redirect_group = "1000"
+  protocol = 6
+  dst_port_low = 443
+  dst_port_high = 443
+  redirect_port = 8080
+  action = "redirect"
 }
 
 resource "alteon_cli_command" "cli_slb_filt_1_ssl" {
