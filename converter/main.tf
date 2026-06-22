@@ -26,12 +26,26 @@ resource "alteon_ssl_policy" "ssl_policy_outbound_fe_ssl_inspection" {
   be_tls11_version = 2
 }
 
-resource "alteon_cli_command" "cli_slb_ssl_certs_group_242" {
-  agalteonclicommand = "/c/slb/ssl/certs/group 242/type certificate/chainmod keyid/add \"1001\""
+resource "alteon_ssl_cert" "ssl_cert_1001_3" {
+  cert_id = "1001"
+  cert_type = 3
 }
 
-resource "alteon_cli_command" "cli_slb_ssl_certs_group_442" {
-  agalteonclicommand = "/c/slb/ssl/certs/group 442/type certificate/chainmod keyid/add \"1001\""
+resource "alteon_ssl_cert" "ssl_cert_webmanagementcert_3" {
+  cert_id = "WebManagementCert"
+  cert_type = 3
+}
+
+resource "alteon_ssl_cert_group" "ssl_cert_group_242" {
+  group_id = "242"
+  certificates = [1001]
+  type = 3
+}
+
+resource "alteon_ssl_cert_group" "ssl_cert_group_442" {
+  group_id = "442"
+  certificates = [1001]
+  type = 3
 }
 
 resource "alteon_real_server" "real_server_101102" {
@@ -91,25 +105,22 @@ resource "alteon_server_group" "server_group_1030" {
 
 resource "alteon_filter" "filter_1" {
   index = 1
-  state = false
+  state = 3
   src_ip = "10.12.25.13"
-  src_mask = "255.255.255.255"
+  src_ip_mask = "255.255.255.255"
   dst_ip = "10.12.148.220"
-  dst_mask = "255.255.255.255"
-  redirect_group = "1000"
-  protocol = 6
-  dst_port_low = 443
-  dst_port_high = 443
-  redirect_port = 8080
-  action = "redirect"
-}
-
-resource "alteon_cli_command" "cli_slb_filt_1_ssl" {
-  agalteonclicommand = "/c/slb/filt 1/ssl/srvrcert cert 1001/sslpol system_pki_auth"
-}
-
-resource "alteon_cli_command" "cli_slb_filt_1_adv_redir" {
-  agalteonclicommand = "/c/slb/filt 1/adv/redir/dbind forceproxy/rtproxy ena"
+  dst_ip_mask = "255.255.255.255"
+  redir_group = "1000"
+  protocol = "6"
+  range_low_dst_port = "443"
+  range_high_dst_port = "443"
+  redir_port = "8080"
+  action = 3
+  ssl_policy = "system_pki_auth"
+  srv_cert = "1001"
+  srv_cert_group = 0
+  dbind = 2
+  rtproxy = 2
 }
 
 resource "alteon_virtual_server" "virtual_server_1000" {

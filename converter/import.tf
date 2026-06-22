@@ -1,4 +1,24 @@
 import {
+  to = alteon_ssl_cert.ssl_cert_1001_3
+  id = "1001/3"
+}
+
+import {
+  to = alteon_ssl_cert.ssl_cert_webmanagementcert_3
+  id = "WebManagementCert/3"
+}
+
+import {
+  to = alteon_ssl_cert_group.ssl_cert_group_242
+  id = "242"
+}
+
+import {
+  to = alteon_ssl_cert_group.ssl_cert_group_442
+  id = "442"
+}
+
+import {
   to = alteon_ssl_policy.ssl_policy_outbound_fe_ssl_inspection
   id = "Outbound_FE_SSL_Inspection"
 }

@@ -20,16 +20,25 @@ The generated Terraform code is intended as a migration and onboarding tool for 
 
 The converter currently supports:
 
-| Alteon Configuration  | Terraform Resource       |
-| --------------------- | ------------------------ |
-| `/c/slb/real`         | `alteon_real_server`     |
-| `/c/slb/group`        | `alteon_server_group`    |
-| `/c/slb/virt`         | `alteon_virtual_server`  |
-| `/c/slb/virt/service` | `alteon_virtual_service` |
-| `/c/slb/ssl/sslpol`   | `alteon_ssl_policy`      |
-| `/c/slb/http2/*`      | `alteon_http2_policy`    |
-| `/c/l3/vrrp/vr`       | `alteon_vrrp`            |
-| `/c/l3/vrrp/vrgroup`  | `alteon_vrrp_group`      |
+| Alteon Configuration        | Terraform Resource                                  |
+| --------------------------- | --------------------------------------------------- |
+| `/c/slb/real`               | `alteon_real_server`                                |
+| `/c/slb/group`              | `alteon_server_group`                               |
+| `/c/slb/virt`               | `alteon_virtual_server`                             |
+| `/c/slb/virt/service`       | `alteon_virtual_service`                            |
+| `/c/slb/ssl/sslpol`         | `alteon_ssl_policy`                                 |
+| `/c/slb/ssl/certs/cert`     | `alteon_ssl_cert`                                   |
+| `/c/slb/ssl/certs/intermca` | `alteon_ssl_cert`                                   |
+| `/c/slb/ssl/certs/group`    | `alteon_ssl_cert_group`                             |
+| `/c/slb/http2/*`            | `alteon_http2_policy`                               |
+| `/c/slb/advhc/health`       | `alteon_advhc_*`                                    |
+| `/c/slb/filt`               | `alteon_filter`                                     |
+| `/c/slb/pip`                | `alteon_pip`                                        |
+| `/c/slb/dataclass`          | `alteon_data_class`                                 |
+| `/c/slb/contentclass`       | `alteon_content_class`                              |
+| `/c/slb/appshape`           | `alteon_appshape_script`, `alteon_appshape_binding` |
+| `/c/l3/vrrp/vr`             | `alteon_vrrp`                                       |
+| `/c/l3/vrrp/vrgroup`        | `alteon_vrrp_group`                                 |
 
 ---
 
@@ -39,9 +48,8 @@ The following objects are currently exported as `alteon_cli_command` resources:
 
 | Alteon Configuration       |
 | -------------------------- |
-| `/c/slb/filt`              |
-| `/c/slb/advhc/health`      |
-| `/c/slb/ssl/certs/group`   |
+| certificate/key/request payload imports |
+| unsupported AdvHC types    |
 | unsupported Alteon objects |
 
 ---
@@ -54,7 +62,16 @@ The converter automatically generates Terraform import blocks for:
 * Server Groups
 * Virtual Servers
 * Virtual Services
+* Filters
+* Advanced Health Checks
+* PIP entries
+* Data Classes
+* Content Classes
+* AppShape Scripts
+* AppShape Bindings
 * SSL Policies
+* SSL Certificates
+* SSL Certificate Groups
 * HTTP/2 Policies
 * VRRP Instances
 * VRRP Groups
@@ -81,7 +98,30 @@ import {
   to = alteon_vrrp_group.vrrp_group_1
   id = "1"
 }
+
+import {
+  to = alteon_filter.filter_1
+  id = "1"
+}
+
+import {
+  to = alteon_advhc_http.advhc_http_checkout
+  id = "checkout"
+}
+
+import {
+  to = alteon_ssl_cert.ssl_cert_web_3
+  id = "web/3"
+}
+
+import {
+  to = alteon_ssl_cert_group.ssl_cert_group_public
+  id = "public"
+}
 ```
+
+Filter enum fields are emitted as provider numeric values. For example,
+`action redirect` becomes `action = 3` and `nat source-address` becomes `nat = 2`.
 
 ---
 
@@ -273,6 +313,11 @@ This makes the generated Terraform easier to read and review.
 * Terraform 1.5+
 * Radware Alteon Terraform Provider
 
+
+This converter requires the Alteon Terraform provider:
+
+* https://github.com/thomaselsaesser/terraform-provider-alteon/
+
 ---
 
 ## Installation
@@ -291,13 +336,13 @@ No external Python dependencies are required.
 Generate Terraform:
 
 ```bash
-python3 alteon_to_terraform_flat_v4_6.py alteon.cfg -o main.tf
+python3 converter/alteon_to_terraform.py alteon.cfg -o main.tf
 ```
 
 Generate Terraform and Imports:
 
 ```bash
-python3 alteon_to_terraform_flat_v4_6.py \
+python3 converter/alteon_to_terraform.py \
   alteon.cfg \
   -o main.tf \
   -i import.tf
@@ -306,7 +351,7 @@ python3 alteon_to_terraform_flat_v4_6.py \
 CLI-only export:
 
 ```bash
-python3 alteon_to_terraform_flat_v4_6.py \
+python3 converter/alteon_to_terraform.py \
   alteon.cfg \
   --cli-only
 ```

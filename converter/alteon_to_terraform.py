@@ -36,6 +36,8 @@
 # - alteon_filter
 # - alteon_advhc_*
 # - alteon_ssl_policy
+# - alteon_ssl_cert
+# - alteon_ssl_cert_group
 # - alteon_http2_policy
 # - alteon_pip
 # - alteon_data_class
@@ -56,10 +58,10 @@
 # https://github.com/team-netz/alteon-to-terraform
 #
 # Version:
-# 0.4.7
+# 0.4.8
 #
 # Release Date:
-# 2026-06-17
+# 2026-06-22
 #
 # Python Version:
 # >= 3.11
@@ -96,6 +98,12 @@
 # production environments.
 #
 # Changelog:
+# 0.4.8
+# - Updated documentation and import coverage for native provider 4.8 resources
+# - Merged known /c/slb/filt subcontexts into native alteon_filter resources
+# - Merged VRRP subcontexts into native VRRP resources instead of CLI fallback
+# - Kept native AdvHC, SSL cert/group, AppShape, PIP, data/content class mappings out of CLI fallback
+#
 # 0.4.7
 # - Added native /c/slb/advhc/health conversion and import generation
 # - Added native alteon_filter conversion and import generation
@@ -168,8 +176,8 @@
 
 """
 
-alteon_to_terraform_flat_v4_6.py
-Version: 0.4.6
+alteon_to_terraform.py
+Version: 0.4.8
 
 Converts selected Radware Alteon configuration sections into
 Terraform resources for the Alteon Terraform Provider.
@@ -188,14 +196,14 @@ Native Resources:
 - /c/slb/contentclass           -> alteon_content_class
 - /c/slb/appshape               -> alteon_appshape_script / alteon_appshape_binding
 - /c/slb/ssl/sslpol             -> alteon_ssl_policy
+- /c/slb/ssl/certs/*            -> alteon_ssl_cert / alteon_ssl_cert_group
 - /c/slb/http2/*                -> alteon_http2_policy
 - /c/l3/vrrp/vr                  -> alteon_vrrp
 - /c/l3/vrrp/vrgroup             -> alteon_vrrp_group
 
 CLI Fallback Resources:
-- /c/slb/filt subcontexts
 - unsupported /c/slb/advhc/health types
-- /c/slb/ssl/certs/group
+- certificate/key/request payload imports
 
 Import generation:
 - alteon_real_server
@@ -210,6 +218,8 @@ Import generation:
 - alteon_appshape_script
 - alteon_appshape_binding
 - alteon_ssl_policy
+- alteon_ssl_cert
+- alteon_ssl_cert_group
 - alteon_http2_policy
 - alteon_vrrp
 - alteon_vrrp_group
@@ -238,6 +248,8 @@ Import IDs:
     Filter           -> <index>
     AdvHC            -> <id_name>
     SSL Policy       -> <name>
+    SSL Cert         -> <cert_id>/<cert_type>
+    SSL Cert Group   -> <group_id>
     Virtual Service  -> <virt_id>/<service_index>
     PIP              -> <address>
     Data Class       -> <id_name>
@@ -261,7 +273,7 @@ from typing import Any, Iterable
 
 __author__ = "Michael Schwenke"
 __company__ = "Team-Netz GmbH"
-__version__ = "0.4.6"
+__version__ = "0.4.8"
 __license__ = "Apache-2.0"
 __status__ = "Development"
 
@@ -524,6 +536,46 @@ def is_ssl_policy_path(path: str) -> bool:
     return bool(re.fullmatch(r"/c/slb/ssl/sslpol\s+[^/\s]+(?:/.+)?", path))
 
 
+SSL_CERT_TYPE_MAP = {
+    "cert": 3,
+    "certificate": 3,
+    "server": 3,
+    "servercert": 3,
+    "servercertificate": 3,
+    "trusted": 4,
+    "trustedca": 4,
+    "trustedcert": 4,
+    "trustedcertificate": 4,
+    "intermca": 5,
+    "intermediate": 5,
+    "intermediateca": 5,
+    "ca": 5,
+}
+
+
+def ssl_cert_type(value: str | None) -> int | None:
+    value = clean_quote(value)
+    if not value:
+        return None
+    if value.isdigit():
+        return int(value)
+    return SSL_CERT_TYPE_MAP.get(value.lower().replace("-", "").replace("_", ""))
+
+
+def parse_ssl_cert_path(path: str) -> tuple[str, int] | None:
+    m = re.fullmatch(r"/c/slb/ssl/certs/(cert|certificate|trustedca|trusted|intermca)\s+([^/\s]+)", path)
+    if not m:
+        return None
+    cert_type = ssl_cert_type(m.group(1))
+    if cert_type is None:
+        return None
+    return m.group(2), cert_type
+
+
+def is_ssl_cert_path(path: str) -> bool:
+    return parse_ssl_cert_path(path) is not None
+
+
 def is_http2_policy_path(path: str) -> bool:
     return bool(
         re.fullmatch(r"/c/slb/(?:accel/)?http2/(?:pol|policy)\s+\S+(?:/.+)?", path)
@@ -622,8 +674,7 @@ def is_ssl_cert_group_path(path: str) -> bool:
 
 def is_cli_supported_path(path: str) -> bool:
     return bool(
-        is_ssl_cert_group_path(path)
-        or is_advhc_health_path(path)
+        is_advhc_health_path(path)
         or is_filter_subpath(path)
         or is_real_subpath(path)
         or is_pip_path(path)
@@ -631,6 +682,8 @@ def is_cli_supported_path(path: str) -> bool:
         or is_content_class_path(path)
         or is_appshape_script_path(path)
         or is_appshape_binding_path(path)
+        or is_vrrp_subpath(path)
+        or is_vrrp_group_subpath(path)
     )
 
 
@@ -798,8 +851,7 @@ def merge_vrrp_blocks(blocks: list[Block]) -> dict[str, dict[str, Any]]:
         if suffix == "track":
             data["track"].extend(block.commands)
         elif suffix:
-            # Unknown VRRP subcontexts are intentionally ignored by native mapping.
-            pass
+            data["base"].extend(block.commands)
         else:
             data["base"].extend(block.commands)
     return vrrps
@@ -817,7 +869,7 @@ def merge_vrrp_group_blocks(blocks: list[Block]) -> dict[str, dict[str, Any]]:
         if suffix == "track":
             data["track"].extend(block.commands)
         elif suffix:
-            pass
+            data["base"].extend(block.commands)
         else:
             data["base"].extend(block.commands)
     return groups
@@ -1623,40 +1675,40 @@ def block_to_server_group(block: Block) -> tuple[str, list[str]] | None:
 
 
 FILTER_ACTION_MAP = {
-    "1": "allow",
-    "allow": "allow",
-    "permit": "allow",
-    "2": "deny",
-    "deny": "deny",
-    "drop": "deny",
-    "discard": "deny",
-    "3": "redirect",
-    "redirect": "redirect",
-    "redir": "redirect",
-    "4": "nat",
-    "nat": "nat",
-    "5": "goto",
-    "goto": "goto",
-    "6": "outbound-llb",
-    "outboundllb": "outbound-llb",
-    "outbound-llb": "outbound-llb",
-    "7": "monitor",
-    "monitor": "monitor",
+    "1": 1,
+    "allow": 1,
+    "permit": 1,
+    "2": 2,
+    "deny": 2,
+    "drop": 2,
+    "discard": 2,
+    "3": 3,
+    "redirect": 3,
+    "redir": 3,
+    "4": 4,
+    "nat": 4,
+    "5": 5,
+    "goto": 5,
+    "6": 6,
+    "outboundllb": 6,
+    "outbound-llb": 6,
+    "7": 7,
+    "monitor": 7,
 }
 
 FILTER_NAT_MAP = {
-    "1": "destination-address",
-    "dest": "destination-address",
-    "dst": "destination-address",
-    "destination": "destination-address",
-    "destination-address": "destination-address",
-    "2": "source-address",
-    "src": "source-address",
-    "source": "source-address",
-    "source-address": "source-address",
-    "3": "multicast-address",
-    "multicast": "multicast-address",
-    "multicast-address": "multicast-address",
+    "1": 1,
+    "dest": 1,
+    "dst": 1,
+    "destination": 1,
+    "destination-address": 1,
+    "2": 2,
+    "src": 2,
+    "source": 2,
+    "source-address": 2,
+    "3": 3,
+    "multicast": 3,
+    "multicast-address": 3,
 }
 
 PROTOCOL_MAP = {
@@ -1684,7 +1736,7 @@ PORT_MAP = {
 }
 
 
-def normalize_filter_action(value: str | None) -> str | None:
+def normalize_filter_action(value: str | None) -> int | None:
     value = clean_quote(value)
     if not value:
         return None
@@ -1692,7 +1744,7 @@ def normalize_filter_action(value: str | None) -> str | None:
     return FILTER_ACTION_MAP.get(normalized)
 
 
-def normalize_filter_nat(value: str | None) -> str | None:
+def normalize_filter_nat(value: str | None) -> int | None:
     value = clean_quote(value)
     if not value:
         return None
@@ -1730,25 +1782,20 @@ def add_filter_port_range(attrs: dict[str, Any], value: str | None, low_key: str
     low = port_number(parts[0])
     high = port_number(parts[1]) if len(parts) > 1 else low
     if low is not None:
-        attrs[low_key] = low
+        attrs[low_key] = str(low)
     if high is not None:
-        attrs[high_key] = high
+        attrs[high_key] = str(high)
 
 
-def block_to_filter(block: Block) -> tuple[str, list[str]] | None:
-    index = path_id(r"/c/slb/filt\s+(\d+)", block.path)
-    if not index:
-        return None
-
-    parsed = parse_commands(block.commands)
-    attrs: dict[str, Any] = {"index": int(index)}
+def apply_filter_commands(attrs: dict[str, Any], commands: list[str], suffix: str | None = None) -> None:
+    parsed = parse_commands(commands)
 
     if "ena" in parsed:
-        attrs["state"] = True
+        attrs["state"] = 2
     elif "dis" in parsed:
-        attrs["state"] = False
+        attrs["state"] = 3
     else:
-        state = cli_bool(one_value(parsed, "state"))
+        state = as_int_or_enum(one_value(parsed, "state"), ENABLE_MAP)
         if state is not None:
             attrs["state"] = state
 
@@ -1757,18 +1804,23 @@ def block_to_filter(block: Block) -> tuple[str, list[str]] | None:
         "sip": "src_ip",
         "srcip": "src_ip",
         "src_ip": "src_ip",
-        "smask": "src_mask",
-        "srcmask": "src_mask",
-        "src_mask": "src_mask",
+        "smask": "src_ip_mask",
+        "srcmask": "src_ip_mask",
+        "src_mask": "src_ip_mask",
+        "srcipmask": "src_ip_mask",
+        "src_ip_mask": "src_ip_mask",
         "dip": "dst_ip",
         "dstip": "dst_ip",
         "dst_ip": "dst_ip",
-        "dmask": "dst_mask",
-        "dstmask": "dst_mask",
-        "dst_mask": "dst_mask",
-        "group": "redirect_group",
-        "redirgroup": "redirect_group",
-        "redirect_group": "redirect_group",
+        "dmask": "dst_ip_mask",
+        "dstmask": "dst_ip_mask",
+        "dst_mask": "dst_ip_mask",
+        "dstipmask": "dst_ip_mask",
+        "dst_ip_mask": "dst_ip_mask",
+        "group": "redir_group",
+        "redirgroup": "redir_group",
+        "redirect_group": "redir_group",
+        "redir_group": "redir_group",
     }.items():
         value = clean_quote(one_value(parsed, cli_key))
         if value and value.lower() != "any":
@@ -1776,37 +1828,46 @@ def block_to_filter(block: Block) -> tuple[str, list[str]] | None:
 
     proto = protocol_number(one_value(parsed, "proto") or one_value(parsed, "protocol"))
     if proto is not None:
-        attrs["protocol"] = proto
+        attrs["protocol"] = str(proto)
 
     add_filter_port_range(
         attrs,
         one_value(parsed, "sport") or one_value(parsed, "srcport") or one_value(parsed, "src_port"),
-        "src_port_low",
-        "src_port_high",
+        "range_low_src_port",
+        "range_high_src_port",
     )
     add_filter_port_range(
         attrs,
         one_value(parsed, "dport") or one_value(parsed, "dstport") or one_value(parsed, "dst_port"),
-        "dst_port_low",
-        "dst_port_high",
+        "range_low_dst_port",
+        "range_high_dst_port",
     )
 
     for cli_key, tf_key in {
-        "sportlow": "src_port_low",
-        "srcportlow": "src_port_low",
-        "sporthigh": "src_port_high",
-        "srcporthigh": "src_port_high",
-        "dportlow": "dst_port_low",
-        "dstportlow": "dst_port_low",
-        "dporthigh": "dst_port_high",
-        "dstporthigh": "dst_port_high",
-        "rport": "redirect_port",
-        "redirport": "redirect_port",
-        "redirect_port": "redirect_port",
+        "sportlow": "range_low_src_port",
+        "srcportlow": "range_low_src_port",
+        "range_low_src_port": "range_low_src_port",
+        "sporthigh": "range_high_src_port",
+        "srcporthigh": "range_high_src_port",
+        "range_high_src_port": "range_high_src_port",
+        "dportlow": "range_low_dst_port",
+        "dstportlow": "range_low_dst_port",
+        "range_low_dst_port": "range_low_dst_port",
+        "dporthigh": "range_high_dst_port",
+        "dstporthigh": "range_high_dst_port",
+        "range_high_dst_port": "range_high_dst_port",
+        "rport": "redir_port",
+        "redirport": "redir_port",
+        "redirect_port": "redir_port",
+        "redir_port": "redir_port",
         "goto": "goto_filter",
         "gotofilter": "goto_filter",
     }.items():
-        value = port_number(one_value(parsed, cli_key)) if "port" in cli_key or cli_key == "rport" else as_int_or_enum(one_value(parsed, cli_key))
+        if "port" in cli_key or cli_key == "rport":
+            port = port_number(one_value(parsed, cli_key))
+            value = str(port) if port is not None else None
+        else:
+            value = clean_quote(one_value(parsed, cli_key))
         if value is not None:
             attrs[tf_key] = value
 
@@ -1820,14 +1881,14 @@ def block_to_filter(block: Block) -> tuple[str, list[str]] | None:
 
     vlan = as_int_or_enum(one_value(parsed, "vlan"))
     if vlan is not None:
-        attrs["vlan"] = vlan
+        attrs["vlan"] = str(vlan)
 
     for cli_key, tf_key in {
         "invert": "invert",
         "inv": "invert",
         "log": "log",
     }.items():
-        value = cli_bool(one_value(parsed, cli_key))
+        value = as_int_or_enum(one_value(parsed, cli_key), ENABLE_MAP)
         if value is not None:
             attrs[tf_key] = value
 
@@ -1838,10 +1899,70 @@ def block_to_filter(block: Block) -> tuple[str, list[str]] | None:
         or clean_quote(one_value(parsed, "addurl"))
     )
     if content_class:
-        attrs["content_class"] = content_class
+        attrs["cntclass"] = content_class
 
+    if suffix:
+        suffix = suffix.lower()
+
+    if suffix and suffix.startswith("ssl"):
+        sslpol = clean_quote(one_value(parsed, "sslpol"))
+        if sslpol:
+            attrs["ssl_policy"] = sslpol
+
+        srvrcert = clean_quote(one_value(parsed, "srvrcert"))
+        if srvrcert:
+            parts = split_cmd(srvrcert)
+            if len(parts) >= 2 and parts[0].lower() == "group":
+                attrs["srv_cert"] = parts[-1]
+                attrs["srv_cert_group"] = 1
+            elif len(parts) >= 2 and parts[0].lower() == "cert":
+                attrs["srv_cert"] = parts[-1]
+                attrs["srv_cert_group"] = 0
+            else:
+                attrs["srv_cert"] = srvrcert
+
+    if suffix and suffix.startswith("adv"):
+        dbind = map_dbind(one_value(parsed, "dbind"))
+        if dbind is not None:
+            attrs["dbind"] = dbind
+
+        rtproxy = as_int_or_enum(one_value(parsed, "rtproxy") or one_value(parsed, "return_to_proxy"), ENABLE_MAP)
+        if rtproxy is not None:
+            attrs["rtproxy"] = rtproxy
+
+        rtsrcmac = as_int_or_enum(one_value(parsed, "rtsrcmac") or one_value(parsed, "return_to_src_mac"), ENABLE_MAP)
+        if rtsrcmac is not None:
+            attrs["rtsrcmac"] = rtsrcmac
+
+
+def block_to_filter(block: Block) -> tuple[str, list[str]] | None:
+    index = path_id(r"/c/slb/filt\s+(\d+)", block.path)
+    if not index:
+        return None
+
+    attrs: dict[str, Any] = {"index": int(index)}
+    apply_filter_commands(attrs, block.commands)
     res_name = f"filter_{index}"
     return res_name, hcl_resource("alteon_filter", res_name, attrs)
+
+
+def merge_filter_blocks(blocks: list[Block]) -> dict[str, dict[str, Any]]:
+    filters: dict[str, dict[str, Any]] = {}
+    for block in blocks:
+        m = re.fullmatch(r"/c/slb/filt\s+(\d+)(?:/(.+))?", block.path)
+        if not m:
+            continue
+        index = m.group(1)
+        suffix = m.group(2)
+        data = filters.setdefault(index, {"attrs": {"index": int(index)}, "paths": set()})
+        data["paths"].add(block.path)
+        apply_filter_commands(data["attrs"], block.commands, suffix)
+    return filters
+
+
+def filter_to_hcl(index: str, data: dict[str, Any]) -> tuple[str, list[str]]:
+    res_name = f"filter_{index}"
+    return res_name, hcl_resource("alteon_filter", res_name, data["attrs"])
 
 
 
@@ -2172,6 +2293,131 @@ def ssl_policy_to_hcl(name: str, sections: dict[str, list[str]]) -> tuple[str, l
     return res_name, hcl_resource("alteon_ssl_policy", res_name, attrs)
 
 
+def merge_ssl_cert_blocks(blocks: list[Block]) -> dict[tuple[str, int], dict[str, Any]]:
+    certs: dict[tuple[str, int], dict[str, Any]] = {}
+    for block in blocks:
+        parsed_path = parse_ssl_cert_path(block.path)
+        if not parsed_path:
+            continue
+        cert_id, cert_type = parsed_path
+        parsed = parse_commands(block.commands)
+        attrs = certs.setdefault((cert_id, cert_type), {"cert_id": cert_id, "cert_type": cert_type})
+
+        for cli_key, tf_key in {
+            "name": "name",
+            "commonname": "common_name",
+            "common_name": "common_name",
+            "cn": "common_name",
+            "country": "country_name",
+            "countryname": "country_name",
+            "country_name": "country_name",
+            "province": "province_name",
+            "provincename": "province_name",
+            "province_name": "province_name",
+            "locality": "locality_name",
+            "localityname": "locality_name",
+            "locality_name": "locality_name",
+            "organization": "organization_name",
+            "organizationname": "organization_name",
+            "organization_name": "organization_name",
+            "organizationunit": "organization_unit_name",
+            "organizationunitname": "organization_unit_name",
+            "organization_unit_name": "organization_unit_name",
+            "email": "e_mail",
+            "e_mail": "e_mail",
+            "serial": "serial",
+            "subjectaltname": "subject_alt_name",
+            "subject_alt_name": "subject_alt_name",
+            "expiry": "expiry",
+            "expirty": "expirty",
+            "intermca": "intermca_chain_name",
+            "intermcachain": "intermca_chain_name",
+            "intermca_chain_name": "intermca_chain_name",
+        }.items():
+            value = clean_quote(one_value(parsed, cli_key))
+            if value:
+                attrs[tf_key] = value
+
+        for cli_key, tf_key in {
+            "keysize": "key_size",
+            "key_size": "key_size",
+            "hashalgo": "hash_algo",
+            "hash_algo": "hash_algo",
+            "validity": "validity_period",
+            "validityperiod": "validity_period",
+            "validity_period": "validity_period",
+            "status": "status",
+            "keytype": "key_type",
+            "key_type": "key_type",
+            "keysizeec": "key_size_ec",
+            "key_size_ec": "key_size_ec",
+            "curvenameec": "curve_name_ec",
+            "curve_name_ec": "curve_name_ec",
+            "keysizecommon": "key_size_common",
+            "key_size_common": "key_size_common",
+            "intermcachaintype": "intermca_chain_type",
+            "intermca_chain_type": "intermca_chain_type",
+        }.items():
+            value = as_int_or_enum(one_value(parsed, cli_key))
+            if value is not None:
+                attrs[tf_key] = value
+    return certs
+
+
+def ssl_cert_to_hcl(cert_id: str, cert_type: int, attrs: dict[str, Any]) -> tuple[str, list[str]]:
+    res_name = f"ssl_cert_{cert_id}_{cert_type}"
+    return res_name, hcl_resource("alteon_ssl_cert", res_name, attrs)
+
+
+def merge_ssl_cert_group_blocks(blocks: list[Block]) -> dict[str, dict[str, Any]]:
+    groups: dict[str, dict[str, Any]] = {}
+    for block in blocks:
+        group_id = path_id(r"/c/slb/ssl/certs/group\s+(\S+)", block.path)
+        if not group_id:
+            continue
+        parsed = parse_commands(block.commands)
+        attrs = groups.setdefault(group_id, {"group_id": group_id, "certificates": []})
+
+        name = clean_quote(one_value(parsed, "name"))
+        if name:
+            attrs["name"] = name
+
+        group_type = ssl_cert_type(one_value(parsed, "type"))
+        if group_type is not None:
+            attrs["type"] = group_type
+
+        default_cert = clean_quote(one_value(parsed, "default") or one_value(parsed, "defaultcert") or one_value(parsed, "default_cert"))
+        if default_cert:
+            attrs["default_cert"] = default_cert
+
+        for cli_key, tf_key in {
+            "configtype": "config_type",
+            "config_type": "config_type",
+            "chaining": "chaining_mode",
+            "chainingmode": "chaining_mode",
+            "chaining_mode": "chaining_mode",
+        }.items():
+            value = as_int_or_enum(one_value(parsed, cli_key))
+            if value is not None:
+                attrs[tf_key] = value
+
+        for value in parsed.get("add", []):
+            cert = as_int_or_enum(clean_quote(value))
+            if cert is not None and cert not in attrs["certificates"]:
+                attrs["certificates"].append(cert)
+
+    for data in groups.values():
+        data["certificates"] = sorted(data.get("certificates", []))
+        if not data["certificates"]:
+            data.pop("certificates", None)
+    return groups
+
+
+def ssl_cert_group_to_hcl(group_id: str, attrs: dict[str, Any]) -> tuple[str, list[str]]:
+    res_name = f"ssl_cert_group_{group_id}"
+    return res_name, hcl_resource("alteon_ssl_cert_group", res_name, attrs)
+
+
 def merge_http2_policy_blocks(blocks: list[Block]) -> dict[str, list[str]]:
     policies: dict[str, list[str]] = {}
     for block in blocks:
@@ -2237,7 +2483,10 @@ def blocks_to_terraform(blocks: Iterable[Block], native: bool = True) -> str:
     used_cli_names: set[str] = set()
 
     service_data = merge_service_blocks(blocks)
+    filter_data = merge_filter_blocks(blocks)
     ssl_policy_data = merge_ssl_policy_blocks(blocks)
+    ssl_cert_data = merge_ssl_cert_blocks(blocks)
+    ssl_cert_group_data = merge_ssl_cert_group_blocks(blocks)
     http2_policy_data = merge_http2_policy_blocks(blocks)
     vrrp_data = merge_vrrp_blocks(blocks)
     vrrp_group_data = merge_vrrp_group_blocks(blocks)
@@ -2259,7 +2508,10 @@ def blocks_to_terraform(blocks: Iterable[Block], native: bool = True) -> str:
             services_by_virt.setdefault(data["virt_id"], []).append((key, lines))
 
     emitted_service_keys: set[tuple[str, int, str | None]] = set()
+    emitted_filters: set[str] = set()
     emitted_ssl_policies = False
+    emitted_ssl_certs = False
+    emitted_ssl_cert_groups = False
     emitted_http2_policies = False
     emitted_pips = False
     emitted_data_classes = False
@@ -2276,6 +2528,18 @@ def blocks_to_terraform(blocks: Iterable[Block], native: bool = True) -> str:
             out.append("")
         emitted_ssl_policies = True
 
+        for cert_id, cert_type in sorted(ssl_cert_data):
+            _, lines = ssl_cert_to_hcl(cert_id, cert_type, ssl_cert_data[(cert_id, cert_type)])
+            out.extend(lines)
+            out.append("")
+        emitted_ssl_certs = True
+
+        for group_id in sorted(ssl_cert_group_data):
+            _, lines = ssl_cert_group_to_hcl(group_id, ssl_cert_group_data[group_id])
+            out.extend(lines)
+            out.append("")
+        emitted_ssl_cert_groups = True
+
         for name in sorted(http2_policy_data):
             _, lines = http2_policy_to_hcl(name, http2_policy_data[name])
             out.extend(lines)
@@ -2291,12 +2555,18 @@ def blocks_to_terraform(blocks: Iterable[Block], native: bool = True) -> str:
         if is_ssl_policy_path(block.path):
             if native and emitted_ssl_policies:
                 continue
+        if is_ssl_cert_path(block.path):
+            if native and emitted_ssl_certs:
+                continue
+        if is_ssl_cert_group_path(block.path):
+            if native and emitted_ssl_cert_groups:
+                continue
         if is_http2_policy_path(block.path):
             if native and emitted_http2_policies:
                 continue
 
-        if is_vrrp_subpath(block.path) or is_vrrp_group_subpath(block.path):
-            # Track subcontexts are merged into their parent native resource.
+        if native and (is_vrrp_subpath(block.path) or is_vrrp_group_subpath(block.path)):
+            # VRRP subcontexts are merged into their parent native resource.
             continue
 
         if native and is_advhc_health_path(block.path):
@@ -2359,6 +2629,15 @@ def blocks_to_terraform(blocks: Iterable[Block], native: bool = True) -> str:
                 emitted_appshape_bindings = True
             continue
 
+        if native and (is_filter_path(block.path) or is_filter_subpath(block.path)):
+            index = path_id(r"/c/slb/filt\s+(\d+)", block.path)
+            if index and index in filter_data and index not in emitted_filters:
+                _, lines = filter_to_hcl(index, filter_data[index])
+                out.extend(lines)
+                out.append("")
+                emitted_filters.add(index)
+            continue
+
         # Virtual servers are handled in the next pass so services can be placed
         # directly below their parent virtual server.
         if is_virt_path(block.path):
@@ -2370,8 +2649,6 @@ def blocks_to_terraform(blocks: Iterable[Block], native: bool = True) -> str:
             rendered = block_to_real_server(block)
         elif native and is_group_path(block.path):
             rendered = block_to_server_group(block)
-        elif native and is_filter_path(block.path):
-            rendered = block_to_filter(block)
         elif native and is_vrrp_path(block.path):
             index = path_id(r"/c/l3/vrrp/vr\s+([^/\s]+)", block.path)
             if index and index in vrrp_data:
@@ -2392,6 +2669,8 @@ def blocks_to_terraform(blocks: Iterable[Block], native: bool = True) -> str:
                 or is_filter_path(block.path)
                 or is_vrrp_path(block.path)
                 or is_vrrp_group_path(block.path)
+                or is_ssl_cert_path(block.path)
+                or is_ssl_cert_group_path(block.path)
                 or is_pip_path(block.path)
                 or is_advhc_health_path(block.path)
                 or is_data_class_path(block.path)
@@ -2483,6 +2762,8 @@ def collect_imports(blocks: Iterable[Block], native: bool = True) -> list[dict[s
     appshape_script_data = merge_appshape_script_blocks(blocks)
     appshape_binding_data = merge_appshape_binding_blocks(blocks, service_data)
     advhc_data = merge_advhc_blocks(blocks)
+    ssl_cert_data = merge_ssl_cert_blocks(blocks)
+    ssl_cert_group_data = merge_ssl_cert_group_blocks(blocks)
 
     for block in blocks:
         if is_real_path(block.path):
@@ -2496,17 +2777,17 @@ def collect_imports(blocks: Iterable[Block], native: bool = True) -> list[dict[s
             if index:
                 add(f"alteon_server_group.{safe_name(f'server_group_{index}')}", index)
 
-        elif is_filter_path(block.path):
+        elif is_filter_path(block.path) or is_filter_subpath(block.path):
             index = path_id(r"/c/slb/filt\s+(\d+)", block.path)
             if index:
                 add(f"alteon_filter.{safe_name(f'filter_{index}')}", index)
 
-        elif is_vrrp_path(block.path):
+        elif is_vrrp_path(block.path) or is_vrrp_subpath(block.path):
             index = path_id(r"/c/l3/vrrp/vr\s+([^/\s]+)", block.path)
             if index:
                 add(f"alteon_vrrp.{safe_name(f'vrrp_{index}')}", index)
 
-        elif is_vrrp_group_path(block.path):
+        elif is_vrrp_group_path(block.path) or is_vrrp_group_subpath(block.path):
             index = path_id(r"/c/l3/vrrp/(?:vrgroup|group)\s+([^/\s]+)", block.path)
             if index:
                 add(f"alteon_vrrp_group.{safe_name(f'vrrp_group_{index}')}", index)
@@ -2552,6 +2833,17 @@ def collect_imports(blocks: Iterable[Block], native: bool = True) -> list[dict[s
             if m:
                 name = m.group(1)
                 add(f"alteon_ssl_policy.{safe_name(f'ssl_policy_{name}')}", name)
+
+        elif is_ssl_cert_path(block.path):
+            for cert_id, cert_type in sorted(ssl_cert_data):
+                add(
+                    f"alteon_ssl_cert.{safe_name(f'ssl_cert_{cert_id}_{cert_type}')}",
+                    f"{cert_id}/{cert_type}",
+                )
+
+        elif is_ssl_cert_group_path(block.path):
+            for group_id in sorted(ssl_cert_group_data):
+                add(f"alteon_ssl_cert_group.{safe_name(f'ssl_cert_group_{group_id}')}", group_id)
 
         elif is_http2_policy_path(block.path):
             m = re.fullmatch(r"/c/slb/(?:accel/)?http2/(?:pol|policy)\s+(\S+)(?:/.+)?", block.path)
@@ -2624,6 +2916,8 @@ def main() -> int:
         or is_virt_path(b.path)
         or is_virt_service_path(b.path)
         or is_ssl_policy_path(b.path)
+        or is_ssl_cert_path(b.path)
+        or is_ssl_cert_group_path(b.path)
         or is_http2_policy_path(b.path)
         or is_pip_path(b.path)
         or is_data_class_path(b.path)
@@ -2637,7 +2931,7 @@ def main() -> int:
         or is_cli_supported_path(b.path)
     ]
 
-    print("alteon_to_terraform_flat_v4_6")
+    print(f"alteon_to_terraform {__version__}")
     print(f"OK: {len(relevant)} relevante Alteon-Blöcke nach {args.output} geschrieben.")
     if args.import_file:
         print(f"OK: {len(generated_imports)} Import-Blöcke nach {args.import_file} geschrieben.")
