@@ -21,6 +21,10 @@
 # - /c/slb/ssl/certs/group
 # - /c/slb/advhc/health
 # - /c/slb/filt
+# - /c/slb/pip
+# - /c/slb/dataclass
+# - /c/slb/contentclass
+# - /c/slb/appshape
 # - /c/l3/vrrp/vr
 # - /c/l3/vrrp/vrgroup
 #
@@ -29,8 +33,15 @@
 # - alteon_server_group
 # - alteon_virtual_server
 # - alteon_virtual_service
+# - alteon_filter
+# - alteon_advhc_*
 # - alteon_ssl_policy
 # - alteon_http2_policy
+# - alteon_pip
+# - alteon_data_class
+# - alteon_content_class
+# - alteon_appshape_script
+# - alteon_appshape_binding
 # - alteon_vrrp
 # - alteon_vrrp_group
 # - alteon_cli_command (fallback for unsupported objects)
@@ -45,7 +56,7 @@
 # https://github.com/team-netz/alteon-to-terraform
 #
 # Version:
-# 0.4.6
+# 0.4.7
 #
 # Release Date:
 # 2026-06-17
@@ -85,6 +96,11 @@
 # production environments.
 #
 # Changelog:
+# 0.4.7
+# - Added native /c/slb/advhc/health conversion and import generation
+# - Added native alteon_filter conversion and import generation
+# - Added native data/content class and AppShape conversion/import generation
+# - Added native alteon_pip conversion and import generation
 #
 # 0.4.6
 # - Added VRRP group virtual_routers mapping from /c/l3/vrrp/vrgroup add entries
@@ -151,6 +167,7 @@
 # =============================================================================
 
 """
+
 alteon_to_terraform_flat_v4_6.py
 Version: 0.4.6
 
@@ -164,14 +181,20 @@ Native Resources:
 - /c/slb/group                   -> alteon_server_group
 - /c/slb/virt                    -> alteon_virtual_server
 - /c/slb/virt/service            -> alteon_virtual_service
+- /c/slb/filt                    -> alteon_filter
+- /c/slb/advhc/health            -> alteon_advhc_*
+- /c/slb/pip                     -> alteon_pip
+- /c/slb/dataclass              -> alteon_data_class
+- /c/slb/contentclass           -> alteon_content_class
+- /c/slb/appshape               -> alteon_appshape_script / alteon_appshape_binding
 - /c/slb/ssl/sslpol             -> alteon_ssl_policy
 - /c/slb/http2/*                -> alteon_http2_policy
 - /c/l3/vrrp/vr                  -> alteon_vrrp
 - /c/l3/vrrp/vrgroup             -> alteon_vrrp_group
 
 CLI Fallback Resources:
-- /c/slb/filt
-- /c/slb/advhc/health
+- /c/slb/filt subcontexts
+- unsupported /c/slb/advhc/health types
 - /c/slb/ssl/certs/group
 
 Import generation:
@@ -179,6 +202,13 @@ Import generation:
 - alteon_server_group
 - alteon_virtual_server
 - alteon_virtual_service
+- alteon_filter
+- alteon_advhc_*
+- alteon_pip
+- alteon_data_class
+- alteon_content_class
+- alteon_appshape_script
+- alteon_appshape_binding
 - alteon_ssl_policy
 - alteon_http2_policy
 - alteon_vrrp
@@ -205,8 +235,15 @@ Import IDs:
     Real Server      -> <index>
     Server Group     -> <index>
     Virtual Server   -> <index>
+    Filter           -> <index>
+    AdvHC            -> <id_name>
     SSL Policy       -> <name>
     Virtual Service  -> <virt_id>/<service_index>
+    PIP              -> <address>
+    Data Class       -> <id_name>
+    Content Class    -> <id_name>
+    AppShape Script  -> <index>
+    AppShape Binding -> service:<virt>/<service_index>/<priority> or filter:<filter>/<priority>
     VRRP             -> <index>
     VRRP Group       -> <index>
 ```
@@ -281,7 +318,7 @@ def parse_alteon_config(text: str) -> list[Block]:
         if in_pem_or_text_import:
             continue
 
-        if stripped.startswith("/*") or stripped.startswith("script "):
+        if stripped.startswith("/*") or (stripped.startswith("script ") and (not current or "/appshape" not in current.path)):
             continue
 
         if stripped.startswith("/c/") or stripped == "/":
@@ -385,6 +422,29 @@ def hcl_resource(resource_type: str, name: str, attrs: dict[str, Any]) -> list[s
     return lines
 
 
+def hcl_resource_with_blocks(
+    resource_type: str,
+    name: str,
+    attrs: dict[str, Any],
+    blocks: dict[str, list[dict[str, Any]]] | None = None,
+) -> list[str]:
+    lines = [f'resource "{resource_type}" "{safe_name(name)}" {{']
+    for key, value in attrs.items():
+        if value is None:
+            continue
+        lines.append(f"  {key} = {hcl_value(value)}")
+    for block_name, entries in (blocks or {}).items():
+        for entry in entries:
+            lines.append(f"  {block_name} {{")
+            for key, value in entry.items():
+                if value is None:
+                    continue
+                lines.append(f"    {key} = {hcl_value(value)}")
+            lines.append("  }")
+    lines.append("}")
+    return lines
+
+
 def safe_name(value: str) -> str:
     name = re.sub(r'["\s/.-]+', "_", value)
     name = re.sub(r"[^A-Za-z0-9_]", "_", name)
@@ -428,6 +488,14 @@ def is_real_subpath(path: str) -> bool:
 
 def is_group_path(path: str) -> bool:
     return bool(re.fullmatch(r"/c/slb/group\s+\S+", path))
+
+
+def is_filter_path(path: str) -> bool:
+    return bool(re.fullmatch(r"/c/slb/filt\s+\d+", path))
+
+
+def is_filter_subpath(path: str) -> bool:
+    return bool(re.fullmatch(r"/c/slb/filt\s+\d+/.+", path))
 
 
 def is_virt_path(path: str) -> bool:
@@ -479,8 +547,73 @@ def is_vrrp_group_subpath(path: str) -> bool:
     return bool(re.fullmatch(r"/c/l3/vrrp/(?:vrgroup|group)\s+[^/\s]+/.+", path))
 
 
+def is_pip_path(path: str) -> bool:
+    return bool(re.fullmatch(r"/c/slb/pip(?:/(?:type|add)(?:\s+.+)?)?", path))
+
+
+def parse_data_class_path(path: str) -> tuple[str, str | None, str | None] | None:
+    m = re.fullmatch(r"/c/slb/(?:data[-_]?class|dataclass|dclass)\s+([^/\s]+)(?:/(?:manual|entry|entries)(?:\s+([^/\s]+))?)?", path)
+    if not m:
+        return None
+    return m.group(1), "entry" if m.group(2) else None, m.group(2)
+
+
+def is_data_class_path(path: str) -> bool:
+    return parse_data_class_path(path) is not None
+
+
+def parse_content_class_path(path: str) -> tuple[str, str | None, str | None] | None:
+    prefix = r"/c/slb/(?:content[-_]?class|contentclass|contclass|class|l7/content[-_]?class|layer7/content[-_]?class)"
+    m = re.fullmatch(prefix + r"\s+([^/\s]+)(?:/([^/\s]+)(?:\s+([^/\s]+))?)?", path)
+    if not m:
+        return None
+    return m.group(1), m.group(2), m.group(3)
+
+
+def is_content_class_path(path: str) -> bool:
+    return parse_content_class_path(path) is not None
+
+
+def parse_appshape_script_path(path: str) -> str | None:
+    m = re.fullmatch(r"/c/slb/appshape(?:/script)?\s+([^/\s]+)", path)
+    return m.group(1) if m else None
+
+
+def is_appshape_script_path(path: str) -> bool:
+    return parse_appshape_script_path(path) is not None
+
+
+def parse_appshape_binding_path(path: str) -> tuple[str, str | None, int | None, int | None, int | None] | None:
+    service = re.fullmatch(r"/c/slb/virt\s+([^/\s]+)/service\s+\d+(?:\s+[^/]+)?/appshape(?:\s+(\d+))?", path)
+    if service:
+        return "service", service.group(1), None, None, as_int_or_enum(service.group(2))
+    filt = re.fullmatch(r"/c/slb/filt\s+(\d+)/appshape(?:\s+(\d+))?", path)
+    if filt:
+        return "filter", None, None, int(filt.group(1)), as_int_or_enum(filt.group(2))
+    bind = re.fullmatch(r"/c/slb/appshape/bind\s+(service|filter)\s+(.+)", path)
+    if not bind:
+        return None
+    parts = split_cmd(bind.group(2))
+    if bind.group(1) == "filter" and len(parts) >= 2:
+        return "filter", None, None, as_int_or_enum(parts[0]), as_int_or_enum(parts[1])
+    if bind.group(1) == "service" and len(parts) >= 3:
+        return "service", parts[0], as_int_or_enum(parts[1]), None, as_int_or_enum(parts[2])
+    return None
+
+
+def is_appshape_binding_path(path: str) -> bool:
+    return parse_appshape_binding_path(path) is not None
+
+
 def is_advhc_health_path(path: str) -> bool:
     return bool(re.fullmatch(r"/c/slb/advhc/health\s+\S+(?:\s+\S+)?(?:/.+)?", path))
+
+
+def parse_advhc_health_path(path: str) -> tuple[str, str | None, str | None] | None:
+    m = re.fullmatch(r"/c/slb/advhc/health\s+([^/\s]+)(?:\s+([^/\s]+))?(?:/(.+))?", path)
+    if not m:
+        return None
+    return m.group(1), m.group(2), m.group(3)
 
 
 def is_ssl_cert_group_path(path: str) -> bool:
@@ -491,8 +624,13 @@ def is_cli_supported_path(path: str) -> bool:
     return bool(
         is_ssl_cert_group_path(path)
         or is_advhc_health_path(path)
-        or re.fullmatch(r"/c/slb/filt\s+\S+(?:/.+)?", path)
+        or is_filter_subpath(path)
         or is_real_subpath(path)
+        or is_pip_path(path)
+        or is_data_class_path(path)
+        or is_content_class_path(path)
+        or is_appshape_script_path(path)
+        or is_appshape_binding_path(path)
     )
 
 
@@ -780,6 +918,571 @@ def vrrp_group_to_hcl(index: str, data: dict[str, Any]) -> tuple[str, list[str]]
     return res_name, hcl_resource("alteon_vrrp_group", res_name, attrs)
 
 
+def pip_kind(value: str | None) -> str | None:
+    value = clean_quote(value)
+    if not value:
+        return None
+    normalized = value.lower().strip()
+    if normalized in {"vlan", "vlans"}:
+        return "vlans"
+    if normalized in {"port", "ports"}:
+        return "ports"
+    return None
+
+
+def add_pip_assignment(pips: dict[str, dict[str, Any]], kind: str | None, value: str | None) -> None:
+    if kind not in {"ports", "vlans"} or not value:
+        return
+
+    parts = split_cmd(value)
+    if len(parts) < 2:
+        return
+
+    address = clean_quote(parts[0])
+    assignment = as_int_or_enum(parts[1])
+    if not address or assignment is None:
+        return
+
+    data = pips.setdefault(address, {"address": address, "ports": [], "vlans": []})
+    if assignment not in data[kind]:
+        data[kind].append(assignment)
+
+
+def merge_pip_blocks(blocks: list[Block]) -> dict[str, dict[str, Any]]:
+    pips: dict[str, dict[str, Any]] = {}
+    current_kind: str | None = None
+
+    for block in blocks:
+        if not is_pip_path(block.path):
+            continue
+
+        type_match = re.fullmatch(r"/c/slb/pip/type\s+(\S+)", block.path)
+        if type_match:
+            current_kind = pip_kind(type_match.group(1))
+            continue
+
+        add_match = re.fullmatch(r"/c/slb/pip/add\s+(.+)", block.path)
+        if add_match:
+            add_pip_assignment(pips, current_kind, add_match.group(1))
+            continue
+
+        parsed = parse_commands(block.commands)
+        for value in parsed.get("type", []):
+            kind = pip_kind(value)
+            if kind:
+                current_kind = kind
+        for value in parsed.get("add", []):
+            add_pip_assignment(pips, current_kind, value)
+
+    return pips
+
+
+def pip_to_hcl(address: str, data: dict[str, Any]) -> tuple[str, list[str]]:
+    attrs: dict[str, Any] = {"address": address}
+    ports = sorted(data.get("ports", []))
+    vlans = sorted(data.get("vlans", []))
+    if ports:
+        attrs["ports"] = ports
+    if vlans:
+        attrs["vlans"] = vlans
+    res_name = f"pip_{address}"
+    return res_name, hcl_resource("alteon_pip", res_name, attrs)
+
+
+def data_class_type(value: str | None) -> str | None:
+    value = clean_quote(value)
+    if not value:
+        return None
+    normalized = value.lower().strip()
+    if normalized in {"ip", "ipv4", "address", "2"}:
+        return "ip"
+    if normalized in {"string", "str", "1"}:
+        return "string"
+    return None
+
+
+def add_data_class_entry(data: dict[str, Any], entry_id: int | None, value: str | None) -> None:
+    parts = split_cmd(value or "")
+    if entry_id is None:
+        if len(parts) < 2:
+            return
+        entry_id = as_int_or_enum(parts[0])
+        parts = parts[1:]
+    if entry_id is None or not parts:
+        return
+    entry: dict[str, Any] = {"id": entry_id, "key": clean_quote(parts[0])}
+    if len(parts) > 1:
+        entry["value"] = clean_quote(" ".join(parts[1:]))
+    data.setdefault("entry", {})[entry_id] = entry
+
+
+def merge_data_class_blocks(blocks: list[Block]) -> dict[str, dict[str, Any]]:
+    classes: dict[str, dict[str, Any]] = {}
+    for block in blocks:
+        parsed_path = parse_data_class_path(block.path)
+        if not parsed_path:
+            continue
+        dc_id, suffix, entry_id_raw = parsed_path
+        data = classes.setdefault(dc_id, {"attrs": {"id_name": dc_id}, "entry": {}})
+        parsed = parse_commands(block.commands)
+
+        if suffix == "entry":
+            entry_id = as_int_or_enum(entry_id_raw)
+            key = clean_quote(one_value(parsed, "key"))
+            if key and entry_id is not None:
+                entry = {"id": entry_id, "key": key}
+                value = clean_quote(one_value(parsed, "value") or one_value(parsed, "val"))
+                if value:
+                    entry["value"] = value
+                data["entry"][entry_id] = entry
+            for value in parsed.get("add", []):
+                add_data_class_entry(data, entry_id, value)
+            continue
+
+        attrs = data["attrs"]
+        name = clean_quote(one_value(parsed, "name"))
+        if name:
+            attrs["name"] = name
+        dtype = data_class_type(one_value(parsed, "type") or one_value(parsed, "datatype") or one_value(parsed, "data_type"))
+        if dtype:
+            attrs["data_type"] = dtype
+        default = cli_bool(one_value(parsed, "default"))
+        if default is not None:
+            attrs["default"] = default
+        for value in parsed.get("add", []) + parsed.get("entry", []):
+            add_data_class_entry(data, None, value)
+
+    return classes
+
+
+def data_class_to_hcl(dc_id: str, data: dict[str, Any]) -> tuple[str, list[str]]:
+    entries = sorted(data.get("entry", {}).values(), key=lambda item: int(item["id"]))
+    res_name = f"data_class_{dc_id}"
+    return res_name, hcl_resource_with_blocks("alteon_data_class", res_name, data["attrs"], {"entry": entries})
+
+
+CONTENT_MATCH_TYPES = ("hostname", "path", "filename", "filetype", "header", "cookie", "text", "xml")
+URL_MATCH_REVERSE = {"1": "sufx", "2": "prefx", "3": "equal", "4": "include", "5": "regex"}
+HDR_MATCH_REVERSE = {"3": "equal", "4": "include", "5": "regex"}
+TEXT_MATCH_REVERSE = {"4": "include", "5": "regex"}
+TEXT_LOOKUP_REVERSE = {"1": "header", "2": "body", "3": "both"}
+XML_NAME_REVERSE = {"1": "sufx", "3": "equal"}
+XML_VAL_REVERSE = {"1": "sufx", "3": "equal", "4": "include"}
+
+
+def enum_word(value: str | None, reverse: dict[str, str]) -> str | None:
+    value = clean_quote(value)
+    if not value:
+        return None
+    normalized = value.lower().strip()
+    return reverse.get(normalized, normalized)
+
+
+def add_content_entry(data: dict[str, Any], kind: str | None, entry_id: str | None, commands: list[str], inline: str | None = None) -> None:
+    if kind not in CONTENT_MATCH_TYPES:
+        return
+    parsed = parse_commands(commands)
+    parts = split_cmd(inline or "")
+    if not entry_id and parts:
+        entry_id = clean_quote(parts[0])
+        parts = parts[1:]
+    if not entry_id:
+        entry_id = str(len(data.setdefault(kind, [])) + 1)
+
+    entry: dict[str, Any] = {"id": entry_id}
+    if kind == "hostname":
+        entry["host_name"] = clean_quote(one_value(parsed, "hostname") or one_value(parsed, "host") or (parts[0] if parts else None))
+        entry["match_type"] = enum_word(one_value(parsed, "match") or one_value(parsed, "matchtype") or (parts[1] if len(parts) > 1 else None), URL_MATCH_REVERSE)
+        entry["data_class_id"] = clean_quote(one_value(parsed, "dataclass") or one_value(parsed, "data_class_id"))
+    elif kind == "path":
+        entry["file_path"] = clean_quote(one_value(parsed, "path") or one_value(parsed, "file") or one_value(parsed, "filepath") or (parts[0] if parts else None))
+        entry["match_type"] = enum_word(one_value(parsed, "match") or one_value(parsed, "matchtype") or (parts[1] if len(parts) > 1 else None), URL_MATCH_REVERSE)
+        entry["case"] = cli_bool(one_value(parsed, "case"))
+        entry["data_class_id"] = clean_quote(one_value(parsed, "dataclass") or one_value(parsed, "data_class_id"))
+    elif kind == "filename":
+        entry["file_name"] = clean_quote(one_value(parsed, "filename") or one_value(parsed, "name") or (parts[0] if parts else None))
+        entry["match_type"] = enum_word(one_value(parsed, "match") or one_value(parsed, "matchtype") or (parts[1] if len(parts) > 1 else None), URL_MATCH_REVERSE)
+        entry["case"] = cli_bool(one_value(parsed, "case"))
+    elif kind == "filetype":
+        entry["file_type"] = clean_quote(one_value(parsed, "filetype") or one_value(parsed, "type") or (parts[0] if parts else None))
+        entry["match_type"] = enum_word(one_value(parsed, "match") or one_value(parsed, "matchtype") or (parts[1] if len(parts) > 1 else None), URL_MATCH_REVERSE)
+        entry["case"] = cli_bool(one_value(parsed, "case"))
+    elif kind == "header":
+        entry["name"] = clean_quote(one_value(parsed, "name") or (parts[0] if parts else None))
+        entry["value"] = clean_quote(one_value(parsed, "value") or one_value(parsed, "val") or (parts[1] if len(parts) > 1 else None))
+        entry["match_type_name"] = enum_word(one_value(parsed, "matchname") or one_value(parsed, "match_type_name"), HDR_MATCH_REVERSE)
+        entry["match_type_val"] = enum_word(one_value(parsed, "matchval") or one_value(parsed, "match_type_val"), HDR_MATCH_REVERSE)
+        entry["case"] = cli_bool(one_value(parsed, "case"))
+    elif kind == "cookie":
+        entry["key"] = clean_quote(one_value(parsed, "key") or (parts[0] if parts else None))
+        entry["value"] = clean_quote(one_value(parsed, "value") or one_value(parsed, "val") or (parts[1] if len(parts) > 1 else None))
+        entry["match_type_key"] = enum_word(one_value(parsed, "matchkey") or one_value(parsed, "match_type_key"), HDR_MATCH_REVERSE)
+        entry["match_type_val"] = enum_word(one_value(parsed, "matchval") or one_value(parsed, "match_type_val"), HDR_MATCH_REVERSE)
+        entry["case"] = cli_bool(one_value(parsed, "case"))
+    elif kind == "text":
+        entry["text"] = clean_quote(one_value(parsed, "text") or (parts[0] if parts else None))
+        entry["match_type"] = enum_word(one_value(parsed, "match") or one_value(parsed, "matchtype"), TEXT_MATCH_REVERSE)
+        entry["lookup_area"] = enum_word(one_value(parsed, "lookup") or one_value(parsed, "lookuparea"), TEXT_LOOKUP_REVERSE)
+        entry["case"] = cli_bool(one_value(parsed, "case"))
+    elif kind == "xml":
+        entry["tag_name"] = clean_quote(one_value(parsed, "tag") or one_value(parsed, "tagname") or (parts[0] if parts else None))
+        entry["tag_value"] = clean_quote(one_value(parsed, "value") or one_value(parsed, "tagval") or (parts[1] if len(parts) > 1 else None))
+        entry["match_type_name"] = enum_word(one_value(parsed, "matchname") or one_value(parsed, "match_type_name"), XML_NAME_REVERSE)
+        entry["match_type_val"] = enum_word(one_value(parsed, "matchval") or one_value(parsed, "match_type_val"), XML_VAL_REVERSE)
+        entry["case"] = cli_bool(one_value(parsed, "case"))
+
+    required = {
+        "hostname": "host_name",
+        "path": "file_path",
+        "filename": "file_name",
+        "filetype": "file_type",
+        "header": "name",
+        "cookie": "key",
+        "text": "text",
+        "xml": "tag_name",
+    }[kind]
+    if entry.get(required):
+        data.setdefault(kind, []).append(entry)
+
+
+def merge_content_class_blocks(blocks: list[Block]) -> dict[str, dict[str, Any]]:
+    classes: dict[str, dict[str, Any]] = {}
+    for block in blocks:
+        parsed_path = parse_content_class_path(block.path)
+        if not parsed_path:
+            continue
+        cc_id, suffix, entry_id = parsed_path
+        data = classes.setdefault(cc_id, {"attrs": {"id_name": cc_id}})
+        parsed = parse_commands(block.commands)
+        if suffix in CONTENT_MATCH_TYPES:
+            add_content_entry(data, suffix, entry_id, block.commands)
+            continue
+        attrs = data["attrs"]
+        name = clean_quote(one_value(parsed, "name"))
+        if name:
+            attrs["name"] = name
+        cc_type = as_int_or_enum(one_value(parsed, "type"))
+        if cc_type is not None:
+            attrs["type"] = cc_type
+        logical = clean_quote(one_value(parsed, "logical") or one_value(parsed, "logical_expression") or one_value(parsed, "logexp"))
+        if logical:
+            attrs["logical_expression"] = logical
+        for kind in CONTENT_MATCH_TYPES:
+            for value in parsed.get(kind, []):
+                add_content_entry(data, kind, None, [], value)
+    return classes
+
+
+def content_class_to_hcl(cc_id: str, data: dict[str, Any]) -> tuple[str, list[str]]:
+    blocks = {kind: data.get(kind, []) for kind in CONTENT_MATCH_TYPES if data.get(kind)}
+    res_name = f"content_class_{cc_id}"
+    return res_name, hcl_resource_with_blocks("alteon_content_class", res_name, data["attrs"], blocks)
+
+
+def appshape_bool(value: str | None) -> bool | None:
+    return cli_bool(value)
+
+
+def merge_appshape_script_blocks(blocks: list[Block]) -> dict[str, dict[str, Any]]:
+    scripts: dict[str, dict[str, Any]] = {}
+    for block in blocks:
+        index = parse_appshape_script_path(block.path)
+        if not index:
+            continue
+        parsed = parse_commands(block.commands)
+        attrs = scripts.setdefault(index, {"index": index})
+        name = clean_quote(one_value(parsed, "name"))
+        if name:
+            attrs["name"] = name
+        state = appshape_bool(one_value(parsed, "state"))
+        if state is None:
+            if "ena" in parsed:
+                state = True
+            elif "dis" in parsed:
+                state = False
+        if state is not None:
+            attrs["state"] = state
+        default = cli_bool(one_value(parsed, "default"))
+        if default is not None:
+            attrs["default"] = default
+    return scripts
+
+
+def appshape_script_to_hcl(index: str, attrs: dict[str, Any]) -> tuple[str, list[str]]:
+    res_name = f"appshape_script_{index}"
+    return res_name, hcl_resource("alteon_appshape_script", res_name, attrs)
+
+
+def add_appshape_binding(bindings: dict[str, dict[str, Any]], attrs: dict[str, Any]) -> None:
+    target = attrs.get("target")
+    priority = attrs.get("priority")
+    script = attrs.get("script_index")
+    if not target or priority is None or not script:
+        return
+    if target == "filter":
+        key = f"filter_{attrs.get('filter')}_{priority}"
+    else:
+        key = f"service_{attrs.get('virtual_server')}_{attrs.get('virtual_service')}_{priority}"
+    bindings[key] = attrs
+
+
+def merge_appshape_binding_blocks(blocks: list[Block], service_data: dict[tuple[str, int, str | None], dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    bindings: dict[str, dict[str, Any]] = {}
+    for block in blocks:
+        parsed_path = parse_appshape_binding_path(block.path)
+        if not parsed_path:
+            continue
+        target, virt, service_index, filt, priority = parsed_path
+        parsed = parse_commands(block.commands)
+        script = clean_quote(one_value(parsed, "script") or one_value(parsed, "index") or one_value(parsed, "script_index"))
+        if not script and parsed.get("add"):
+            parts = split_cmd(parsed["add"][-1])
+            if priority is None and parts:
+                priority = as_int_or_enum(parts[0])
+                parts = parts[1:]
+            if parts:
+                script = clean_quote(parts[-1])
+        if priority is None:
+            priority = as_int_or_enum(one_value(parsed, "priority"))
+        if target == "service":
+            header = parse_service_header(block.path)
+            if header:
+                key = (header[0], header[1], header[2])
+                service_index = int(service_data.get(key, {}).get("service_index") or 1)
+                virt = header[0]
+            attrs = {
+                "target": "service",
+                "virtual_server": virt,
+                "virtual_service": service_index,
+                "priority": priority,
+                "script_index": script,
+            }
+        else:
+            attrs = {
+                "target": "filter",
+                "filter": filt,
+                "priority": priority,
+                "script_index": script,
+            }
+        add_appshape_binding(bindings, attrs)
+    return bindings
+
+
+def appshape_binding_to_hcl(key: str, attrs: dict[str, Any]) -> tuple[str, list[str]]:
+    return f"appshape_binding_{key}", hcl_resource("alteon_appshape_binding", f"appshape_binding_{key}", attrs)
+
+
+ADVHC_TYPE_MAP = {
+    "tcp": "tcp",
+    "icmp": "icmp",
+    "udp": "udp",
+    "dns": "dns",
+    "http": "http",
+    "https": "http",
+    "smtp": "smtp",
+    "sslhello": "sslhello",
+    "ssl_hello": "sslhello",
+    "ssl-hello": "sslhello",
+    "ldap": "ldap",
+    "ldaps": "ldap",
+    "radius": "radius",
+    "arp": "arp",
+    "link": "link",
+    "script": "script",
+}
+
+ADVHC_ENUMS = {
+    "conn_term": {"1": "fin", "fin": "fin", "2": "rst", "rst": "rst"},
+    "conn_tout": {"1": "fin", "fin": "fin", "2": "rst", "rst": "rst"},
+    "transport": {"1": "tcp", "tcp": "tcp", "2": "udp", "udp": "udp"},
+    "method": {"1": "get", "get": "get", "2": "post", "post": "post", "3": "head", "head": "head"},
+    "auth_level": {"1": "none", "none": "none", "2": "basic", "basic": "basic", "3": "ntlm2", "ntlm2": "ntlm2", "4": "ntlmssp", "ntlmssp": "ntlmssp"},
+    "response_type": {"1": "none", "none": "none", "2": "incl", "incl": "incl", "include": "incl", "4": "excl", "excl": "excl", "exclude": "excl"},
+    "overload_type": {"1": "none", "none": "none", "2": "incl", "incl": "incl", "include": "incl"},
+    "https_cipher_name": {"1": "user_defined", "user-defined": "user_defined", "user_defined": "user_defined", "2": "low", "low": "low", "3": "medium", "medium": "medium", "4": "high", "high": "high"},
+}
+
+
+def advhc_type(value: str | None) -> str | None:
+    value = clean_quote(value)
+    if not value:
+        return None
+    return ADVHC_TYPE_MAP.get(value.lower().replace("-", "_"))
+
+
+def advhc_ip_version(value: str | None) -> int | None:
+    value = clean_quote(value)
+    if not value:
+        return None
+    v = value.lower()
+    if v in {"v4", "ipv4", "4", "1"}:
+        return 4
+    if v in {"v6", "ipv6", "6", "2"}:
+        return 6
+    return None
+
+
+def advhc_enum(field: str, value: str | None) -> str | None:
+    value = clean_quote(value)
+    if not value:
+        return None
+    return ADVHC_ENUMS.get(field, {}).get(value.lower().replace("_", "-"))
+
+
+def set_advhc_string(attrs: dict[str, Any], parsed: dict[str, list[str]], keys: list[str], tf_key: str) -> None:
+    for key in keys:
+        value = clean_quote(one_value(parsed, key))
+        if value:
+            attrs[tf_key] = value
+            return
+
+
+def set_advhc_int(attrs: dict[str, Any], parsed: dict[str, list[str]], keys: list[str], tf_key: str) -> None:
+    for key in keys:
+        value = as_int_or_enum(one_value(parsed, key))
+        if value is not None:
+            attrs[tf_key] = value
+            return
+
+
+def set_advhc_bool(attrs: dict[str, Any], parsed: dict[str, list[str]], keys: list[str], tf_key: str) -> None:
+    for key in keys:
+        value = cli_bool(one_value(parsed, key))
+        if value is not None:
+            attrs[tf_key] = value
+            return
+
+
+def set_advhc_enum(attrs: dict[str, Any], parsed: dict[str, list[str]], keys: list[str], tf_key: str) -> None:
+    for key in keys:
+        value = advhc_enum(tf_key, one_value(parsed, key))
+        if value:
+            attrs[tf_key] = value
+            return
+
+
+def apply_advhc_commands(attrs: dict[str, Any], hc_type: str, commands: list[str], suffix: str | None = None) -> None:
+    parsed = parse_commands(commands)
+
+    set_advhc_string(attrs, parsed, ["name"], "name")
+    dport = port_number(one_value(parsed, "dport") or one_value(parsed, "port"))
+    if dport is not None:
+        attrs["dport"] = dport
+    ip_ver = advhc_ip_version(one_value(parsed, "ipver") or one_value(parsed, "ip_version"))
+    if ip_ver is not None:
+        attrs["ip_version"] = ip_ver
+    set_advhc_string(attrs, parsed, ["hostname", "host_name"], "host_name")
+    for cli_keys, tf_key in [
+        (["transparent"], "transparent"),
+        (["invert"], "invert"),
+        (["snat"], "snat"),
+    ]:
+        set_advhc_bool(attrs, parsed, cli_keys, tf_key)
+    for cli_keys, tf_key in [
+        (["interval"], "interval"),
+        (["retries"], "retries"),
+        (["restoreretries", "restore_retries"], "restore_retries"),
+        (["timeout"], "timeout"),
+        (["overflow"], "overflow"),
+        (["downinterval", "down_interval"], "down_interval"),
+    ]:
+        set_advhc_int(attrs, parsed, cli_keys, tf_key)
+
+    if hc_type == "tcp":
+        set_advhc_enum(attrs, parsed, ["connterm", "conn_term"], "conn_term")
+        set_advhc_bool(attrs, parsed, ["always"], "always")
+    elif hc_type == "udp":
+        set_advhc_int(attrs, parsed, ["padding"], "padding")
+    elif hc_type == "dns":
+        set_advhc_string(attrs, parsed, ["domain", "domainname", "domain_name"], "domain_name")
+        set_advhc_enum(attrs, parsed, ["transport"], "transport")
+    elif hc_type == "http":
+        if suffix and suffix.lower() == "http":
+            pass
+        set_advhc_bool(attrs, parsed, ["https", "ssl"], "https")
+        set_advhc_string(attrs, parsed, ["host"], "host")
+        set_advhc_string(attrs, parsed, ["path"], "path")
+        set_advhc_enum(attrs, parsed, ["method"], "method")
+        set_advhc_string(attrs, parsed, ["headers", "header"], "headers")
+        set_advhc_string(attrs, parsed, ["body"], "body")
+        set_advhc_enum(attrs, parsed, ["auth", "authlevel", "auth_level"], "auth_level")
+        set_advhc_string(attrs, parsed, ["username", "user"], "username")
+        set_advhc_string(attrs, parsed, ["password", "pass"], "password")
+        set_advhc_enum(attrs, parsed, ["responsetype", "response_type"], "response_type")
+        set_advhc_string(attrs, parsed, ["responsecode", "response_code"], "response_code")
+        set_advhc_string(attrs, parsed, ["receivestring", "receive_string", "recv"], "receive_string")
+        response = one_value(parsed, "response")
+        if response:
+            parts = split_cmd(response)
+            if parts:
+                attrs["response_code"] = clean_quote(parts[0])
+            if len(parts) > 1:
+                response_type = advhc_enum("response_type", parts[1])
+                if response_type:
+                    attrs["response_type"] = response_type
+            if len(parts) > 2:
+                receive = clean_quote(" ".join(parts[2:]))
+                if receive:
+                    attrs["receive_string"] = receive
+        set_advhc_enum(attrs, parsed, ["overloadtype", "overload_type"], "overload_type")
+        set_advhc_string(attrs, parsed, ["overloadstring", "overload_string"], "overload_string")
+        set_advhc_string(attrs, parsed, ["responsecodeoverload", "response_code_overload"], "response_code_overload")
+        set_advhc_bool(attrs, parsed, ["proxy"], "proxy")
+        set_advhc_enum(attrs, parsed, ["cipher", "httpsciphername", "https_cipher_name"], "https_cipher_name")
+        set_advhc_string(attrs, parsed, ["cipheruserdef", "https_cipher_userdef"], "https_cipher_userdef")
+        set_advhc_bool(attrs, parsed, ["http2"], "http2")
+        set_advhc_enum(attrs, parsed, ["conntout", "conn_tout"], "conn_tout")
+    elif hc_type == "smtp":
+        set_advhc_string(attrs, parsed, ["username", "user"], "username")
+    elif hc_type == "sslhello":
+        set_advhc_string(attrs, parsed, ["sslversion", "ssl_version"], "ssl_version")
+        set_advhc_string(attrs, parsed, ["cipher", "ciphername", "cipher_name"], "cipher_name")
+        set_advhc_string(attrs, parsed, ["cipheruserdef", "cipher_userdef"], "cipher_userdef")
+    elif hc_type == "ldap":
+        set_advhc_bool(attrs, parsed, ["ldaps", "ssl"], "ldaps")
+        set_advhc_string(attrs, parsed, ["username", "user"], "username")
+        set_advhc_string(attrs, parsed, ["password", "pass"], "password")
+        set_advhc_string(attrs, parsed, ["baseobject", "base_object"], "base_object")
+        set_advhc_string(attrs, parsed, ["basefmt", "base_fmt"], "base_fmt")
+    elif hc_type == "radius":
+        set_advhc_int(attrs, parsed, ["downtype", "down_type"], "down_type")
+        set_advhc_string(attrs, parsed, ["username", "user"], "username")
+        set_advhc_string(attrs, parsed, ["password", "pass"], "password")
+        set_advhc_string(attrs, parsed, ["secret"], "secret")
+    elif hc_type == "script":
+        script = one_value(parsed, "string") or one_value(parsed, "stringval") or one_value(parsed, "string_val")
+        if script:
+            attrs["string_val"] = clean_quote(script)
+
+
+def merge_advhc_blocks(blocks: list[Block]) -> dict[str, dict[str, Any]]:
+    checks: dict[str, dict[str, Any]] = {}
+    for block in blocks:
+        parsed_path = parse_advhc_health_path(block.path)
+        if not parsed_path:
+            continue
+        name, raw_type, suffix = parsed_path
+        hc_type = advhc_type(raw_type)
+        data = checks.setdefault(name, {"type": hc_type, "attrs": {"id_name": name}, "raw": []})
+        if hc_type and not data.get("type"):
+            data["type"] = hc_type
+        if raw_type and raw_type.lower() in {"https", "ldaps"}:
+            data["attrs"]["https" if raw_type.lower() == "https" else "ldaps"] = True
+        data["raw"].append(block)
+        if data.get("type"):
+            apply_advhc_commands(data["attrs"], data["type"], block.commands, suffix)
+    return checks
+
+
+def advhc_to_hcl(name: str, data: dict[str, Any]) -> tuple[str, list[str]] | None:
+    hc_type = data.get("type")
+    if not hc_type:
+        return None
+    res_type = f"alteon_advhc_{hc_type}"
+    res_name = f"advhc_{hc_type}_{name}"
+    return res_name, hcl_resource(res_type, res_name, data["attrs"])
+
+
 
 GROUP_METRIC_MAP = {
     "1": "roundrobin",
@@ -917,6 +1620,228 @@ def block_to_server_group(block: Block) -> tuple[str, list[str]] | None:
 
     res_name = f"server_group_{index}"
     return res_name, hcl_resource("alteon_server_group", res_name, attrs)
+
+
+FILTER_ACTION_MAP = {
+    "1": "allow",
+    "allow": "allow",
+    "permit": "allow",
+    "2": "deny",
+    "deny": "deny",
+    "drop": "deny",
+    "discard": "deny",
+    "3": "redirect",
+    "redirect": "redirect",
+    "redir": "redirect",
+    "4": "nat",
+    "nat": "nat",
+    "5": "goto",
+    "goto": "goto",
+    "6": "outbound-llb",
+    "outboundllb": "outbound-llb",
+    "outbound-llb": "outbound-llb",
+    "7": "monitor",
+    "monitor": "monitor",
+}
+
+FILTER_NAT_MAP = {
+    "1": "destination-address",
+    "dest": "destination-address",
+    "dst": "destination-address",
+    "destination": "destination-address",
+    "destination-address": "destination-address",
+    "2": "source-address",
+    "src": "source-address",
+    "source": "source-address",
+    "source-address": "source-address",
+    "3": "multicast-address",
+    "multicast": "multicast-address",
+    "multicast-address": "multicast-address",
+}
+
+PROTOCOL_MAP = {
+    "icmp": 1,
+    "tcp": 6,
+    "udp": 17,
+    "gre": 47,
+    "esp": 50,
+    "ah": 51,
+}
+
+PORT_MAP = {
+    "ftp": 21,
+    "ssh": 22,
+    "telnet": 23,
+    "smtp": 25,
+    "dns": 53,
+    "http": 80,
+    "pop3": 110,
+    "ntp": 123,
+    "imap": 143,
+    "ldap": 389,
+    "https": 443,
+    "ldaps": 636,
+}
+
+
+def normalize_filter_action(value: str | None) -> str | None:
+    value = clean_quote(value)
+    if not value:
+        return None
+    normalized = value.lower().replace("_", "-")
+    return FILTER_ACTION_MAP.get(normalized)
+
+
+def normalize_filter_nat(value: str | None) -> str | None:
+    value = clean_quote(value)
+    if not value:
+        return None
+    normalized = value.lower().replace("_", "-")
+    return FILTER_NAT_MAP.get(normalized)
+
+
+def protocol_number(value: str | None) -> int | None:
+    value = clean_quote(value)
+    if not value:
+        return None
+    normalized = value.lower()
+    if normalized.isdigit():
+        return int(normalized)
+    return PROTOCOL_MAP.get(normalized)
+
+
+def port_number(value: str | None) -> int | None:
+    value = clean_quote(value)
+    if not value:
+        return None
+    normalized = value.lower()
+    if normalized in {"any", "all"}:
+        return None
+    if normalized.isdigit():
+        return int(normalized)
+    return PORT_MAP.get(normalized)
+
+
+def add_filter_port_range(attrs: dict[str, Any], value: str | None, low_key: str, high_key: str) -> None:
+    value = clean_quote(value)
+    if not value:
+        return
+    parts = re.split(r"\s+|-", value, maxsplit=1)
+    low = port_number(parts[0])
+    high = port_number(parts[1]) if len(parts) > 1 else low
+    if low is not None:
+        attrs[low_key] = low
+    if high is not None:
+        attrs[high_key] = high
+
+
+def block_to_filter(block: Block) -> tuple[str, list[str]] | None:
+    index = path_id(r"/c/slb/filt\s+(\d+)", block.path)
+    if not index:
+        return None
+
+    parsed = parse_commands(block.commands)
+    attrs: dict[str, Any] = {"index": int(index)}
+
+    if "ena" in parsed:
+        attrs["state"] = True
+    elif "dis" in parsed:
+        attrs["state"] = False
+    else:
+        state = cli_bool(one_value(parsed, "state"))
+        if state is not None:
+            attrs["state"] = state
+
+    for cli_key, tf_key in {
+        "name": "name",
+        "sip": "src_ip",
+        "srcip": "src_ip",
+        "src_ip": "src_ip",
+        "smask": "src_mask",
+        "srcmask": "src_mask",
+        "src_mask": "src_mask",
+        "dip": "dst_ip",
+        "dstip": "dst_ip",
+        "dst_ip": "dst_ip",
+        "dmask": "dst_mask",
+        "dstmask": "dst_mask",
+        "dst_mask": "dst_mask",
+        "group": "redirect_group",
+        "redirgroup": "redirect_group",
+        "redirect_group": "redirect_group",
+    }.items():
+        value = clean_quote(one_value(parsed, cli_key))
+        if value and value.lower() != "any":
+            attrs[tf_key] = value
+
+    proto = protocol_number(one_value(parsed, "proto") or one_value(parsed, "protocol"))
+    if proto is not None:
+        attrs["protocol"] = proto
+
+    add_filter_port_range(
+        attrs,
+        one_value(parsed, "sport") or one_value(parsed, "srcport") or one_value(parsed, "src_port"),
+        "src_port_low",
+        "src_port_high",
+    )
+    add_filter_port_range(
+        attrs,
+        one_value(parsed, "dport") or one_value(parsed, "dstport") or one_value(parsed, "dst_port"),
+        "dst_port_low",
+        "dst_port_high",
+    )
+
+    for cli_key, tf_key in {
+        "sportlow": "src_port_low",
+        "srcportlow": "src_port_low",
+        "sporthigh": "src_port_high",
+        "srcporthigh": "src_port_high",
+        "dportlow": "dst_port_low",
+        "dstportlow": "dst_port_low",
+        "dporthigh": "dst_port_high",
+        "dstporthigh": "dst_port_high",
+        "rport": "redirect_port",
+        "redirport": "redirect_port",
+        "redirect_port": "redirect_port",
+        "goto": "goto_filter",
+        "gotofilter": "goto_filter",
+    }.items():
+        value = port_number(one_value(parsed, cli_key)) if "port" in cli_key or cli_key == "rport" else as_int_or_enum(one_value(parsed, cli_key))
+        if value is not None:
+            attrs[tf_key] = value
+
+    action = normalize_filter_action(one_value(parsed, "action"))
+    if action:
+        attrs["action"] = action
+
+    nat = normalize_filter_nat(one_value(parsed, "nat"))
+    if nat:
+        attrs["nat"] = nat
+
+    vlan = as_int_or_enum(one_value(parsed, "vlan"))
+    if vlan is not None:
+        attrs["vlan"] = vlan
+
+    for cli_key, tf_key in {
+        "invert": "invert",
+        "inv": "invert",
+        "log": "log",
+    }.items():
+        value = cli_bool(one_value(parsed, cli_key))
+        if value is not None:
+            attrs[tf_key] = value
+
+    content_class = (
+        clean_quote(one_value(parsed, "contentclass"))
+        or clean_quote(one_value(parsed, "content_class"))
+        or clean_quote(one_value(parsed, "layer7denyaddurl"))
+        or clean_quote(one_value(parsed, "addurl"))
+    )
+    if content_class:
+        attrs["content_class"] = content_class
+
+    res_name = f"filter_{index}"
+    return res_name, hcl_resource("alteon_filter", res_name, attrs)
 
 
 
@@ -1316,6 +2241,12 @@ def blocks_to_terraform(blocks: Iterable[Block], native: bool = True) -> str:
     http2_policy_data = merge_http2_policy_blocks(blocks)
     vrrp_data = merge_vrrp_blocks(blocks)
     vrrp_group_data = merge_vrrp_group_blocks(blocks)
+    pip_data = merge_pip_blocks(blocks)
+    data_class_data = merge_data_class_blocks(blocks)
+    content_class_data = merge_content_class_blocks(blocks)
+    appshape_script_data = merge_appshape_script_blocks(blocks)
+    appshape_binding_data = merge_appshape_binding_blocks(blocks, service_data)
+    advhc_data = merge_advhc_blocks(blocks)
 
     # Pre-render services grouped by virtual server ID.
     services_by_virt: dict[str, list[tuple[tuple[str, int, str | None], list[str]]]] = {}
@@ -1330,6 +2261,12 @@ def blocks_to_terraform(blocks: Iterable[Block], native: bool = True) -> str:
     emitted_service_keys: set[tuple[str, int, str | None]] = set()
     emitted_ssl_policies = False
     emitted_http2_policies = False
+    emitted_pips = False
+    emitted_data_classes = False
+    emitted_content_classes = False
+    emitted_appshape_scripts = False
+    emitted_appshape_bindings = False
+    emitted_advhc = False
 
     # 1) Policy resources first.
     if native:
@@ -1348,7 +2285,7 @@ def blocks_to_terraform(blocks: Iterable[Block], native: bool = True) -> str:
     # 2) Non-virtual resources in source order.
     for block in blocks:
         service_header = parse_service_header(block.path)
-        if service_header:
+        if service_header and not is_appshape_binding_path(block.path):
             continue
 
         if is_ssl_policy_path(block.path):
@@ -1362,6 +2299,66 @@ def blocks_to_terraform(blocks: Iterable[Block], native: bool = True) -> str:
             # Track subcontexts are merged into their parent native resource.
             continue
 
+        if native and is_advhc_health_path(block.path):
+            if not emitted_advhc:
+                for name in sorted(advhc_data):
+                    rendered_advhc = advhc_to_hcl(name, advhc_data[name])
+                    if rendered_advhc:
+                        _, lines = rendered_advhc
+                        out.extend(lines)
+                        out.append("")
+                    else:
+                        for raw_block in advhc_data[name]["raw"]:
+                            out.extend(cli_command_to_hcl(raw_block, used_cli_names))
+                            out.append("")
+                emitted_advhc = True
+            continue
+
+        if native and is_pip_path(block.path):
+            if not emitted_pips:
+                for address in sorted(pip_data):
+                    _, lines = pip_to_hcl(address, pip_data[address])
+                    out.extend(lines)
+                    out.append("")
+                emitted_pips = True
+            continue
+
+        if native and is_data_class_path(block.path):
+            if not emitted_data_classes:
+                for dc_id in sorted(data_class_data):
+                    _, lines = data_class_to_hcl(dc_id, data_class_data[dc_id])
+                    out.extend(lines)
+                    out.append("")
+                emitted_data_classes = True
+            continue
+
+        if native and is_content_class_path(block.path):
+            if not emitted_content_classes:
+                for cc_id in sorted(content_class_data):
+                    _, lines = content_class_to_hcl(cc_id, content_class_data[cc_id])
+                    out.extend(lines)
+                    out.append("")
+                emitted_content_classes = True
+            continue
+
+        if native and is_appshape_script_path(block.path):
+            if not emitted_appshape_scripts:
+                for index in sorted(appshape_script_data):
+                    _, lines = appshape_script_to_hcl(index, appshape_script_data[index])
+                    out.extend(lines)
+                    out.append("")
+                emitted_appshape_scripts = True
+            continue
+
+        if native and is_appshape_binding_path(block.path):
+            if not emitted_appshape_bindings:
+                for key in sorted(appshape_binding_data):
+                    _, lines = appshape_binding_to_hcl(key, appshape_binding_data[key])
+                    out.extend(lines)
+                    out.append("")
+                emitted_appshape_bindings = True
+            continue
+
         # Virtual servers are handled in the next pass so services can be placed
         # directly below their parent virtual server.
         if is_virt_path(block.path):
@@ -1373,6 +2370,8 @@ def blocks_to_terraform(blocks: Iterable[Block], native: bool = True) -> str:
             rendered = block_to_real_server(block)
         elif native and is_group_path(block.path):
             rendered = block_to_server_group(block)
+        elif native and is_filter_path(block.path):
+            rendered = block_to_filter(block)
         elif native and is_vrrp_path(block.path):
             index = path_id(r"/c/l3/vrrp/vr\s+([^/\s]+)", block.path)
             if index and index in vrrp_data:
@@ -1387,7 +2386,19 @@ def blocks_to_terraform(blocks: Iterable[Block], native: bool = True) -> str:
             out.extend(lines)
             out.append("")
         elif is_cli_supported_path(block.path) or (
-            not native and (is_real_path(block.path) or is_group_path(block.path) or is_vrrp_path(block.path) or is_vrrp_group_path(block.path))
+            not native and (
+                is_real_path(block.path)
+                or is_group_path(block.path)
+                or is_filter_path(block.path)
+                or is_vrrp_path(block.path)
+                or is_vrrp_group_path(block.path)
+                or is_pip_path(block.path)
+                or is_advhc_health_path(block.path)
+                or is_data_class_path(block.path)
+                or is_content_class_path(block.path)
+                or is_appshape_script_path(block.path)
+                or is_appshape_binding_path(block.path)
+            )
         ):
             out.extend(cli_command_to_hcl(block, used_cli_names))
             out.append("")
@@ -1455,6 +2466,7 @@ def collect_imports(blocks: Iterable[Block], native: bool = True) -> list[dict[s
     if not native:
         return []
 
+    blocks = list(blocks)
     imports: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
 
@@ -1464,8 +2476,13 @@ def collect_imports(blocks: Iterable[Block], native: bool = True) -> list[dict[s
             imports.append({"resource": resource, "id": import_id})
             seen.add(key)
 
-    service_data = merge_service_blocks(list(blocks))
-    blocks = list(blocks)
+    service_data = merge_service_blocks(blocks)
+    pip_data = merge_pip_blocks(blocks)
+    data_class_data = merge_data_class_blocks(blocks)
+    content_class_data = merge_content_class_blocks(blocks)
+    appshape_script_data = merge_appshape_script_blocks(blocks)
+    appshape_binding_data = merge_appshape_binding_blocks(blocks, service_data)
+    advhc_data = merge_advhc_blocks(blocks)
 
     for block in blocks:
         if is_real_path(block.path):
@@ -1479,6 +2496,11 @@ def collect_imports(blocks: Iterable[Block], native: bool = True) -> list[dict[s
             if index:
                 add(f"alteon_server_group.{safe_name(f'server_group_{index}')}", index)
 
+        elif is_filter_path(block.path):
+            index = path_id(r"/c/slb/filt\s+(\d+)", block.path)
+            if index:
+                add(f"alteon_filter.{safe_name(f'filter_{index}')}", index)
+
         elif is_vrrp_path(block.path):
             index = path_id(r"/c/l3/vrrp/vr\s+([^/\s]+)", block.path)
             if index:
@@ -1488,6 +2510,36 @@ def collect_imports(blocks: Iterable[Block], native: bool = True) -> list[dict[s
             index = path_id(r"/c/l3/vrrp/(?:vrgroup|group)\s+([^/\s]+)", block.path)
             if index:
                 add(f"alteon_vrrp_group.{safe_name(f'vrrp_group_{index}')}", index)
+
+        elif is_pip_path(block.path):
+            for address in sorted(pip_data):
+                add(f"alteon_pip.{safe_name(f'pip_{address}')}", address)
+
+        elif is_advhc_health_path(block.path):
+            for name in sorted(advhc_data):
+                hc_type = advhc_data[name].get("type")
+                if hc_type:
+                    add(f"alteon_advhc_{hc_type}.{safe_name(f'advhc_{hc_type}_{name}')}", name)
+
+        elif is_data_class_path(block.path):
+            for dc_id in sorted(data_class_data):
+                add(f"alteon_data_class.{safe_name(f'data_class_{dc_id}')}", dc_id)
+
+        elif is_content_class_path(block.path):
+            for cc_id in sorted(content_class_data):
+                add(f"alteon_content_class.{safe_name(f'content_class_{cc_id}')}", cc_id)
+
+        elif is_appshape_script_path(block.path):
+            for index in sorted(appshape_script_data):
+                add(f"alteon_appshape_script.{safe_name(f'appshape_script_{index}')}", index)
+
+        elif is_appshape_binding_path(block.path):
+            for key, attrs in sorted(appshape_binding_data.items()):
+                if attrs["target"] == "filter":
+                    import_id = f"filter:{attrs['filter']}/{attrs['priority']}"
+                else:
+                    import_id = f"service:{attrs['virtual_server']}/{attrs['virtual_service']}/{attrs['priority']}"
+                add(f"alteon_appshape_binding.{safe_name(f'appshape_binding_{key}')}", import_id)
 
         elif is_virt_path(block.path):
             index = path_id(r"/c/slb/virt\s+(\S+)", block.path)
@@ -1567,10 +2619,17 @@ def main() -> int:
         b for b in blocks
         if is_real_path(b.path)
         or is_group_path(b.path)
+        or is_filter_path(b.path)
+        or is_filter_subpath(b.path)
         or is_virt_path(b.path)
         or is_virt_service_path(b.path)
         or is_ssl_policy_path(b.path)
         or is_http2_policy_path(b.path)
+        or is_pip_path(b.path)
+        or is_data_class_path(b.path)
+        or is_content_class_path(b.path)
+        or is_appshape_script_path(b.path)
+        or is_appshape_binding_path(b.path)
         or is_vrrp_path(b.path)
         or is_vrrp_group_path(b.path)
         or is_vrrp_subpath(b.path)
