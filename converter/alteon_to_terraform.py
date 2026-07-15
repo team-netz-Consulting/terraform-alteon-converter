@@ -102,6 +102,7 @@
 # Changelog:
 # 0.4.9
 # - Fixed alteon_real_server_layer7 output to use real_server and exclude_str provider fields
+# - Fixed alteon_virtual_service DBind, PBind, XForwardedFor, and ServCertGrpMark enum mappings
 #
 # 0.4.8
 # - Updated documentation and import coverage for native provider 4.8 resources
@@ -2151,22 +2152,40 @@ def map_service_action(value: str | None) -> int | None:
 
 
 def map_dbind(value: str | None) -> int | None:
-    value = clean_quote(value)
-    if not value:
-        return None
-    # Conservative mapping. Unknown values are skipped instead of producing
-    # invalid integers for the flat provider.
-    mapping = {
-        "disable": 1,
-        "disabled": 1,
-        "off": 1,
-        "forceproxy": 2,
-        "force-proxy": 2,
-        "enable": 2,
-        "enabled": 2,
-        "on": 2,
-    }
-    return mapping.get(value.lower())
+    return as_int_or_enum(
+        value,
+        {
+            "ena": 1,
+            "enable": 1,
+            "enabled": 1,
+            "on": 1,
+            "dis": 2,
+            "disable": 2,
+            "disabled": 2,
+            "off": 2,
+            "forceproxy": 3,
+            "force-proxy": 3,
+        },
+    )
+
+
+def map_pbind(value: str | None) -> int | None:
+    return as_int_or_enum(
+        value,
+        {
+            "clientip": 2,
+            "client-ip": 2,
+            "client_ip": 2,
+            "dis": 3,
+            "disable": 3,
+            "disabled": 3,
+            "off": 3,
+            "sslid": 4,
+            "ssl-id": 4,
+            "ssl_id": 4,
+            "cookie": 5,
+        },
+    )
 
 
 def service_to_hcl(data: dict[str, Any]) -> tuple[str, list[str]]:
@@ -2177,6 +2196,7 @@ def service_to_hcl(data: dict[str, Any]) -> tuple[str, list[str]]:
     parsed = parse_commands(data["base"])
     parsed_ssl = parse_commands(data["ssl"])
     parsed_http = parse_commands(data["http"])
+    parsed_other = parse_commands(data["other"])
 
     service_index = int(data.get("service_index") or 1)
 
@@ -2202,6 +2222,17 @@ def service_to_hcl(data: dict[str, Any]) -> tuple[str, list[str]]:
     if dbind is not None:
         attrs["d_bind"] = dbind
 
+    pbind_value = one_value(parsed, "pbind")
+    if pbind_value is None:
+        for suffix in reversed(parsed_other.get("__path_suffix__", [])):
+            parts = split_cmd(suffix)
+            if len(parts) >= 2 and parts[0].lower() == "pbind":
+                pbind_value = parts[1]
+                break
+    pbind = map_pbind(pbind_value)
+    if pbind is not None:
+        attrs["p_bind"] = pbind
+
     action = map_service_action(one_value(parsed, "action"))
     if action is not None:
         attrs["action"] = action
@@ -2215,7 +2246,7 @@ def service_to_hcl(data: dict[str, Any]) -> tuple[str, list[str]]:
         attrs["name"] = name
 
     # HTTP sub-context.
-    xff = enum_enable(one_value(parsed_http, "xforward"))
+    xff = enum_bool_enable(one_value(parsed_http, "xforward"))
     if xff is not None:
         attrs["x_forwarded_for"] = xff
 
@@ -2229,10 +2260,10 @@ def service_to_hcl(data: dict[str, Any]) -> tuple[str, list[str]]:
         parts = split_cmd(srvrcert)
         if len(parts) >= 2 and parts[0].lower() == "group":
             attrs["serv_cert"] = parts[-1]
-            attrs["serv_cert_grp_mark"] = 1
+            attrs["serv_cert_grp_mark"] = 2
         elif len(parts) >= 2 and parts[0].lower() == "cert":
             attrs["serv_cert"] = parts[-1]
-            attrs["serv_cert_grp_mark"] = 0
+            attrs["serv_cert_grp_mark"] = 1
         else:
             attrs["serv_cert"] = srvrcert
 
