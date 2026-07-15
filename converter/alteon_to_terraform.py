@@ -104,6 +104,7 @@
 # - Fixed alteon_real_server_layer7 output to use real_server and exclude_str provider fields
 # - Fixed alteon_virtual_service DBind, PBind, XForwardedFor, and ServCertGrpMark enum mappings
 # - Fixed alteon_ssl_policy AdminStatus, Convert, Fessl, Bessl, TLS, PassInfo, and cipher enum mappings
+# - Added provider-compatible CertBmap and UrlBmap decoding for certificate groups and real server Layer 7 URLs
 #
 # 0.4.8
 # - Updated documentation and import coverage for native provider 4.8 resources
@@ -412,6 +413,45 @@ def enum_enable(value: str | None) -> int | None:
 
 def enum_bool_enable(value: str | None) -> int | None:
     return as_int_or_enum(value, BOOL_ENABLE_MAP)
+
+
+def decode_hex_bitmap(value: str | None) -> list[int]:
+    value = clean_quote(value)
+    if not value:
+        return []
+    items: list[int] = []
+    for byte_idx, hex_byte in enumerate(value.split(":")):
+        try:
+            byte_value = int(hex_byte or "0", 16)
+        except ValueError:
+            byte_value = 0
+        for bit in range(8):
+            if byte_value & (1 << (7 - bit)):
+                items.append(byte_idx * 8 + bit)
+    return items
+
+
+def parse_int_set_value(value: str | None) -> list[int]:
+    value = clean_quote(value)
+    if not value:
+        return []
+    if re.fullmatch(r"[0-9A-Fa-f]{0,2}(?::[0-9A-Fa-f]{0,2})+", value):
+        return decode_hex_bitmap(value)
+
+    items: list[int] = []
+    for part in re.split(r"[\s,]+", value):
+        item = as_int_or_enum(clean_quote(part))
+        if item is not None:
+            items.append(item)
+    return items
+
+
+def append_unique_ints(target: list[int], values: Iterable[int]) -> None:
+    seen = set(target)
+    for value in values:
+        if value not in seen:
+            target.append(value)
+            seen.add(value)
 
 
 def ipver_to_number(value: str | None) -> int | None:
@@ -813,18 +853,11 @@ def merge_real_server_layer7_blocks(blocks: list[Block]) -> dict[str, dict[str, 
 
         for key in ("addlb", "addurl", "add"):
             for value in parsed.get(key, []):
-                url_id = as_int_or_enum(clean_quote(value))
-                if url_id is not None and url_id not in attrs["urls"]:
-                    attrs["urls"].append(url_id)
+                append_unique_ints(attrs["urls"], parse_int_set_value(value))
 
         for key in ("urlbmap", "urls"):
             value = clean_quote(one_value(parsed, key))
-            if not value:
-                continue
-            for part in re.split(r"[\s,]+", value):
-                url_id = as_int_or_enum(clean_quote(part))
-                if url_id is not None and url_id not in attrs["urls"]:
-                    attrs["urls"].append(url_id)
+            append_unique_ints(attrs["urls"], parse_int_set_value(value))
 
     for data in real_layer7.values():
         data["urls"] = sorted(data.get("urls", []))
@@ -2565,10 +2598,12 @@ def merge_ssl_cert_group_blocks(blocks: list[Block]) -> dict[str, dict[str, Any]
             if value is not None:
                 attrs[tf_key] = value
 
-        for value in parsed.get("add", []):
-            cert = as_int_or_enum(clean_quote(value))
-            if cert is not None and cert not in attrs["certificates"]:
-                attrs["certificates"].append(cert)
+        for key in ("add", "addcert"):
+            for value in parsed.get(key, []):
+                append_unique_ints(attrs["certificates"], parse_int_set_value(value))
+
+        for key in ("certbmap", "certificates"):
+            append_unique_ints(attrs["certificates"], parse_int_set_value(one_value(parsed, key)))
 
     for data in groups.values():
         data["certificates"] = sorted(data.get("certificates", []))
