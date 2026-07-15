@@ -100,6 +100,9 @@
 # production environments.
 #
 # Changelog:
+# 0.4.9
+# - Fixed alteon_real_server_layer7 output to use real_server and exclude_str provider fields
+#
 # 0.4.8
 # - Updated documentation and import coverage for native provider 4.8 resources
 # - Merged known /c/slb/filt subcontexts into native alteon_filter resources
@@ -267,7 +270,6 @@ Import IDs:
 ```
 
 """
-
 from __future__ import annotations
 
 import argparse
@@ -799,11 +801,13 @@ def merge_real_server_layer7_blocks(blocks: list[Block]) -> dict[str, dict[str, 
             continue
 
         parsed = parse_commands(block.commands)
-        attrs = real_layer7.setdefault(index, {"index": index, "urls": []})
+        attrs = real_layer7.setdefault(index, {"real_server": index, "urls": []})
 
         exclude = clean_quote(one_value(parsed, "exclude") or one_value(parsed, "excludestr") or one_value(parsed, "exclude_str"))
         if exclude:
-            attrs["exclude"] = exclude
+            exclude_str = as_int_or_enum(exclude, BOOL_ENABLE_MAP)
+            if exclude_str is not None:
+                attrs["exclude_str"] = exclude_str
 
         for key in ("addlb", "addurl", "add"):
             for value in parsed.get(key, []):
