@@ -103,6 +103,7 @@
 # 0.4.9
 # - Fixed alteon_real_server_layer7 output to use real_server and exclude_str provider fields
 # - Fixed alteon_virtual_service DBind, PBind, XForwardedFor, and ServCertGrpMark enum mappings
+# - Fixed alteon_ssl_policy AdminStatus, Convert, Fessl, Bessl, TLS, PassInfo, and cipher enum mappings
 #
 # 0.4.8
 # - Updated documentation and import coverage for native provider 4.8 resources
@@ -2283,14 +2284,101 @@ def merge_ssl_policy_blocks(blocks: list[Block]) -> dict[str, dict[str, list[str
     return policies
 
 
+SSL_POLICY_FE_MODE_MAP = {
+    "ena": 1,
+    "enable": 1,
+    "enabled": 1,
+    "on": 1,
+    "dis": 2,
+    "disable": 2,
+    "disabled": 2,
+    "off": 2,
+    "request": 3,
+    "req": 3,
+    "handshake": 4,
+    "hs": 4,
+}
+
+SSL_POLICY_BE_MODE_MAP = {
+    **SSL_POLICY_FE_MODE_MAP,
+    "proxy": 5,
+}
+
+SSL_POLICY_CIPHER_MAP = {
+    "rsa": 0,
+    "all": 1,
+    "all-non-null-ciphers": 2,
+    "all_non_null_ciphers": 2,
+    "sslv3": 3,
+    "tlsv1": 4,
+    "tlsv1-2": 5,
+    "tlsv1_2": 5,
+    "export": 6,
+    "low": 7,
+    "medium": 8,
+    "high": 9,
+    "rsa-rc4-128-md5": 10,
+    "rsa-rc4-128-sha1": 11,
+    "rsa-des-sha1": 12,
+    "rsa-3des-sha1": 13,
+    "rsa-aes-128-sha1": 14,
+    "rsa-aes-256-sha1": 15,
+    "pci-dss-compliance": 16,
+    "pci_dss_compliance": 16,
+    "user-defined": 17,
+    "userdefined": 17,
+    "user_defined": 17,
+    "user-defined-expert": 18,
+    "userdefinedexpert": 18,
+    "user_defined_expert": 18,
+    "main": 19,
+    "http2": 20,
+}
+
+SSL_POLICY_BE_CIPHER_MAP = {
+    "low": 0,
+    "medium": 1,
+    "high": 2,
+    "user-defined": 3,
+    "userdefined": 3,
+    "user_defined": 3,
+    "user-defined-expert": 4,
+    "userdefinedexpert": 4,
+    "user_defined_expert": 4,
+    "main": 5,
+}
+
+
 def parse_cipher_command(value: str | None) -> tuple[str | None, str | None]:
     value = clean_quote(value)
     if not value:
         return None, None
     parts = split_cmd(value)
-    if len(parts) >= 2 and parts[0].lower() in {"user-defined", "userdefined"}:
-        return "user-defined", parts[1]
+    if len(parts) >= 2 and parts[0].lower() in {"user-defined", "userdefined", "user_defined", "user-defined-expert", "userdefinedexpert", "user_defined_expert"}:
+        return parts[0].lower(), parts[1]
     return parts[0] if parts else value, None
+
+
+def set_ssl_cipher_attrs(attrs: dict[str, Any], value: str | None, backend: bool = False) -> None:
+    cipher_name, cipher_userdef = parse_cipher_command(value)
+    if not cipher_name:
+        return
+
+    cipher_key = "becipher" if backend else "cipher_name"
+    userdef_key = "be_cipher_userdef" if backend else "cipher_userdef"
+    expert_key = "be_cipher_expert_userdef" if backend else "cipher_expert_userdef"
+    cipher_map = SSL_POLICY_BE_CIPHER_MAP if backend else SSL_POLICY_CIPHER_MAP
+
+    normalized = cipher_name.lower()
+    cipher_value = as_int_or_enum(cipher_name, cipher_map)
+    if cipher_value is not None:
+        attrs[cipher_key] = cipher_value
+
+    if cipher_userdef:
+        if "expert" in normalized:
+            attrs[expert_key] = cipher_userdef
+        else:
+            attrs[userdef_key] = cipher_userdef
 
 
 def ssl_policy_to_hcl(name: str, sections: dict[str, list[str]]) -> tuple[str, list[str]]:
@@ -2307,24 +2395,19 @@ def ssl_policy_to_hcl(name: str, sections: dict[str, list[str]]) -> tuple[str, l
         attrs["name"] = display_name
 
     if "ena" in main:
-        attrs["admin_status"] = 2
+        attrs["admin_status"] = 1
     elif "dis" in main:
-        attrs["admin_status"] = 3
+        attrs["admin_status"] = 2
 
-    convert = enum_enable(one_value(main, "convert"))
+    convert = enum_bool_enable(one_value(main, "convert"))
     if convert is not None:
         attrs["convert"] = convert
 
-    fessl = enum_enable(one_value(main, "fessl"))
+    fessl = as_int_or_enum(one_value(main, "fessl"), SSL_POLICY_FE_MODE_MAP)
     if fessl is not None:
         attrs["fessl"] = fessl
 
-    cipher_raw = one_value(main, "cipher")
-    cipher_name, cipher_userdef = parse_cipher_command(cipher_raw)
-    if cipher_userdef:
-        attrs["cipher_userdef"] = cipher_userdef
-    elif cipher_name and cipher_name.isdigit():
-        attrs["cipher_name"] = int(cipher_name)
+    set_ssl_cipher_attrs(attrs, one_value(main, "cipher"))
 
     intermca = clean_quote(one_value(main, "intermca"))
     if intermca:
@@ -2337,18 +2420,13 @@ def ssl_policy_to_hcl(name: str, sections: dict[str, list[str]]) -> tuple[str, l
     if secreneg:
         attrs["secreneg"] = secreneg
 
-    be_ssl = enum_enable(one_value(backend, "ssl"))
+    be_ssl = as_int_or_enum(one_value(backend, "ssl"), SSL_POLICY_BE_MODE_MAP)
     if be_ssl is not None:
         attrs["bessl"] = be_ssl
 
-    be_cipher_raw = one_value(backend, "cipher")
-    be_cipher_name, be_cipher_userdef = parse_cipher_command(be_cipher_raw)
-    if be_cipher_userdef:
-        attrs["be_cipher_userdef"] = be_cipher_userdef
-    elif be_cipher_name and be_cipher_name.isdigit():
-        attrs["becipher"] = int(be_cipher_name)
+    set_ssl_cipher_attrs(attrs, one_value(backend, "cipher"), backend=True)
 
-    pass_frontend = enum_enable(one_value(passinfo, "frontend"))
+    pass_frontend = enum_bool_enable(one_value(passinfo, "frontend"))
     if pass_frontend is not None:
         attrs["pass_info_frontend"] = pass_frontend
 
@@ -2360,7 +2438,7 @@ def ssl_policy_to_hcl(name: str, sections: dict[str, list[str]]) -> tuple[str, l
         "tls13": "fe_tls13_version",
         "sslv3": "fe_sslv3_version",
     }.items():
-        value = enum_enable(one_value(frver, key))
+        value = enum_bool_enable(one_value(frver, key))
         if value is not None:
             attrs[tf_key] = value
 
@@ -2371,7 +2449,7 @@ def ssl_policy_to_hcl(name: str, sections: dict[str, list[str]]) -> tuple[str, l
         "tls13": "be_tls13_version",
         "sslv3": "be_sslv3_version",
     }.items():
-        value = enum_enable(one_value(bever, key))
+        value = enum_bool_enable(one_value(bever, key))
         if value is not None:
             attrs[tf_key] = value
 
