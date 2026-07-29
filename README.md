@@ -125,6 +125,26 @@ import {
 Filter enum fields are emitted as provider numeric values. For example,
 `action redirect` becomes `action = 3` and `nat source-address` becomes `nat = 2`.
 
+SSL certificate groups use certificate names/IDs as strings, matching the
+current provider schema. The Alteon `CertBmap` is intentionally ignored because
+it contains internal positions that cannot be mapped reliably to certificate
+names.
+
+```text
+/c/slb/ssl/certs/group 1
+    type intermca
+    add "4"
+    add "web.intern.example.de"
+```
+
+```hcl
+resource "alteon_ssl_cert_group" "ssl_cert_group_1" {
+  group_id     = "1"
+  certificates = ["4", "web.intern.example.de"]
+  type         = 5
+}
+```
+
 ---
 
 ## Virtual Service Handling

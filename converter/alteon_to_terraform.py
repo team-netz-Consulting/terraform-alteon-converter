@@ -60,10 +60,10 @@
 # https://github.com/team-netz/alteon-to-terraform
 #
 # Version:
-# 0.4.8
+# 0.5.0
 #
 # Release Date:
-# 2026-06-22
+# 2026-07-29
 #
 # Python Version:
 # >= 3.11
@@ -100,11 +100,15 @@
 # production environments.
 #
 # Changelog:
+# 0.5.0
+# - Adapted SSL certificate groups to the current provider string schema
+# - Emit certificate names/IDs from add/addcert instead of CertBmap indices
+#
 # 0.4.9
 # - Fixed alteon_real_server_layer7 output to use real_server and exclude_str provider fields
 # - Fixed alteon_virtual_service DBind, PBind, XForwardedFor, and ServCertGrpMark enum mappings
 # - Fixed alteon_ssl_policy AdminStatus, Convert, Fessl, Bessl, TLS, PassInfo, and cipher enum mappings
-# - Added provider-compatible CertBmap and UrlBmap decoding for certificate groups and real server Layer 7 URLs
+# - Added provider-compatible UrlBmap decoding for real server Layer 7 URLs
 #
 # 0.4.8
 # - Updated documentation and import coverage for native provider 4.8 resources
@@ -284,7 +288,7 @@ from typing import Any, Iterable
 
 __author__ = "Michael Schwenke"
 __company__ = "Team-Netz GmbH"
-__version__ = "0.4.8"
+__version__ = "0.5.0"
 __license__ = "Apache-2.0"
 __status__ = "Development"
 
@@ -447,6 +451,25 @@ def parse_int_set_value(value: str | None) -> list[int]:
 
 
 def append_unique_ints(target: list[int], values: Iterable[int]) -> None:
+    seen = set(target)
+    for value in values:
+        if value not in seen:
+            target.append(value)
+            seen.add(value)
+
+
+def parse_string_set_value(value: str | None) -> list[str]:
+    value = clean_quote(value)
+    if not value:
+        return []
+    return [
+        item
+        for part in re.split(r"\s*,\s*|\s+", value)
+        if (item := clean_quote(part))
+    ]
+
+
+def append_unique_strings(target: list[str], values: Iterable[str]) -> None:
     seen = set(target)
     for value in values:
         if value not in seen:
@@ -2598,12 +2621,12 @@ def merge_ssl_cert_group_blocks(blocks: list[Block]) -> dict[str, dict[str, Any]
             if value is not None:
                 attrs[tf_key] = value
 
-        for key in ("add", "addcert"):
+        # The current provider expects certificate names/IDs as strings.
+        # CertBmap contains internal positions which cannot be mapped reliably
+        # back to certificate names and must therefore not be emitted.
+        for key in ("add", "addcert", "certificates"):
             for value in parsed.get(key, []):
-                append_unique_ints(attrs["certificates"], parse_int_set_value(value))
-
-        for key in ("certbmap", "certificates"):
-            append_unique_ints(attrs["certificates"], parse_int_set_value(one_value(parsed, key)))
+                append_unique_strings(attrs["certificates"], parse_string_set_value(value))
 
     for data in groups.values():
         data["certificates"] = sorted(data.get("certificates", []))
